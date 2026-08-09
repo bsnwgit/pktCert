@@ -1,6 +1,6 @@
 """
 Certificate Transparency log search — crt.sh (free, no key) and Censys
-(optional, per-user API key from the User Keys tab) as alternate discovery
+(optional, per-user API key from the Cert Keys tab) as alternate discovery
 sources alongside the active TLS scanner.
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ async def search_crtsh(domain: str) -> list[dict[str, Any]]:
 
 async def search_censys(domain: str, api_id: str, api_secret: str) -> list[dict[str, Any]]:
     """Query Censys's host search for the given domain. Requires a Censys
-    API ID/Secret pair (User Keys -> Censys, stored as 'api_id:api_secret')."""
+    API ID/Secret pair (Cert Keys -> Censys, stored as 'api_id:api_secret')."""
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(
             "https://search.censys.io/api/v2/hosts/search",

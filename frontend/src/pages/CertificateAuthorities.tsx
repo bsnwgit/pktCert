@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, CertificateAuthority } from '../api/client'
 import { useAuth } from '../store/auth'
 import HelpButton from '../components/HelpButton'
+import ValidityInput from '../components/ValidityInput'
+import { downloadFile, safeFilename } from '../utils/download'
 
 const STATUS_STYLES: Record<string, string> = {
   active: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40',
@@ -112,8 +114,8 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
                 </select>
               </div>
               <div className="col-span-2">
-                <label className="block text-xs text-white mb-1">Validity (days)</label>
-                <input type="number" min={1} value={validityDays} onChange={e => setValidityDays(Number(e.target.value))} className={inp} />
+                <label className="block text-xs text-white mb-1">Validity</label>
+                <ValidityInput days={validityDays} onChange={setValidityDays} className={inp} />
               </div>
             </div>
           ) : (
@@ -218,6 +220,7 @@ export default function CertificateAuthorities() {
               </div>
               <div className="flex items-center gap-3 shrink-0" onClick={e => e.stopPropagation()}>
                 <button onClick={() => copyToClipboard(ca.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Copy Cert</button>
+                <button onClick={() => downloadFile(`${safeFilename(ca.name)}.pem`, ca.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Download Cert</button>
                 <button onClick={() => handleCrl(ca)} className="text-xs text-sky-400 hover:text-sky-300">CRL</button>
                 {isAdmin && <button onClick={() => handleDelete(ca)} className="text-xs text-white hover:text-red-400">Delete</button>}
               </div>
@@ -236,6 +239,7 @@ export default function CertificateAuthorities() {
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
                       <button onClick={() => copyToClipboard(child.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Copy Cert</button>
+                      <button onClick={() => downloadFile(`${safeFilename(child.name)}.pem`, child.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Download Cert</button>
                       <button onClick={() => handleCrl(child)} className="text-xs text-sky-400 hover:text-sky-300">CRL</button>
                       {isAdmin && <button onClick={() => handleDelete(child)} className="text-xs text-white hover:text-red-400">Delete</button>}
                     </div>

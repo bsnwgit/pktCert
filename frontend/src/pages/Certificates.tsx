@@ -4,6 +4,10 @@ import { api, Certificate, CertificateAuthority, CertTemplate } from '../api/cli
 import { useAuth } from '../store/auth'
 import HelpButton from '../components/HelpButton'
 import Pagination from '../components/Pagination'
+import ConfirmPasswordModal from '../components/ConfirmPasswordModal'
+import { downloadFile, safeFilename } from '../utils/download'
+
+type PendingAction = { title: string; description: string; run: (password: string) => Promise<void> }
 
 const STATUS_STYLES: Record<string, string> = {
   valid: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40',
@@ -40,6 +44,7 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [issued, setIssued] = useState<Certificate | null>(null)
+  const [pending, setPending] = useState<PendingAction | null>(null)
 
   const submit = async () => {
     if (!commonName.trim() || !caId || !templateId) return
@@ -106,7 +111,10 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-1">
                   <label className="text-xs text-white">Private Key (PEM)</label>
-                  <button onClick={() => copyToClipboard(issued.private_key_pem!)} className="text-xs text-sky-400 hover:text-sky-300">Copy</button>
+                  <div className="flex gap-3">
+                    <button onClick={() => copyToClipboard(issued.private_key_pem!)} className="text-xs text-sky-400 hover:text-sky-300">Copy</button>
+                    <button onClick={() => downloadFile(`${safeFilename(issued.common_name)}-key.pem`, issued.private_key_pem!)} className="text-xs text-sky-400 hover:text-sky-300">Download</button>
+                  </div>
                 </div>
                 <textarea readOnly value={issued.private_key_pem} rows={6}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-white resize-none" />
@@ -115,81 +123,76 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
             <div className="mb-4">
               <div className="flex items-center justify-between mb-1">
                 <label className="text-xs text-white">Certificate (PEM)</label>
-                <button onClick={() => api.downloadCertificate(issued.id, 'pem').then(r => copyToClipboard(r.pem))} className="text-xs text-sky-400 hover:text-sky-300">Copy</button>
+                <div className="flex gap-3">
+                  <button onClick={() => setPending({
+                    title: 'Confirm your password',
+                    description: 'Re-enter your current password to copy the certificate PEM. This access is logged.',
+                    run: async password => { const r = await api.downloadCertificate(issued.id, 'pem', password); copyToClipboard(r.pem) },
+                  })} className="text-xs text-sky-400 hover:text-sky-300">Copy</button>
+                  <button onClick={() => setPending({
+                    title: 'Confirm your password',
+                    description: 'Re-enter your current password to download the certificate PEM. This access is logged.',
+                    run: async password => { const r = await api.downloadCertificate(issued.id, 'pem', password); downloadFile(`${safeFilename(issued.common_name)}.pem`, r.pem) },
+                  })} className="text-xs text-sky-400 hover:text-sky-300">Download</button>
+                </div>
               </div>
             </div>
             <button onClick={onClose} className="w-full px-4 py-2 text-sm bg-sky-600 hover:bg-sky-500 text-white rounded-lg">Done</button>
           </>
         )}
       </div>
-    </div>
-  )
-}
-
-// ── Reveal secret (step-up re-auth) modal ──────────────────────────────────
-// Private keys and install passcodes are never returned by a plain GET —
-// the caller must re-enter their current password every time. Every
-// successful reveal is audit-logged server-side (cert_events).
-
-function RevealSecretModal({ certId, field, onClose, onRevealed }: {
-  certId: number
-  field: 'key' | 'passcode'
-  onClose: () => void
-  onRevealed: (value: string) => void
-}) {
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
-    setError('')
-    try {
-      const res = await api.revealCertificateSecret(certId, field, password)
-      onRevealed((field === 'key' ? res.key : res.passcode) ?? '')
-      onClose()
-    } catch (e: any) {
-      setError(e.message ?? 'Failed to reveal secret')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-sm p-6" onClick={e => e.stopPropagation()}>
-        <h3 className="text-lg font-semibold text-white mb-2">Confirm your password</h3>
-        <p className="text-sm text-white mb-4">Re-enter your current password to reveal the {field === 'key' ? 'private key' : 'install passcode'}. This access is logged.</p>
-        <form onSubmit={submit} className="space-y-4">
-          <input type="password" value={password} onChange={e => setPassword(e.target.value)} autoFocus required
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-sky-500" />
-          {error && <p className="text-red-400 text-xs">{error}</p>}
-          <div className="flex justify-end gap-3">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-white">Cancel</button>
-            <button type="submit" disabled={loading || !password}
-              className="px-4 py-2 text-sm bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded-lg">
-              {loading ? 'Verifying…' : 'Reveal'}
-            </button>
-          </div>
-        </form>
-      </div>
+      {pending && <ConfirmPasswordModal title={pending.title} description={pending.description} onConfirm={pending.run} onClose={() => setPending(null)} />}
     </div>
   )
 }
 
 // ── Detail / download modal ────────────────────────────────────────────────
+// Every certificate/chain/key/passcode access here — viewing or downloading
+// to a file — is a fresh step-up re-auth via ConfirmPasswordModal: the
+// caller re-enters their current password every single time (no caching
+// across actions), and each is audit-logged server-side (cert_events).
 
 function DetailModal({ cert, isAdmin, onClose, onRevoked }: { cert: Certificate; isAdmin: boolean; onClose: () => void; onRevoked: () => void }) {
   const [pem, setPem] = useState<{ fmt: string; text: string } | null>(null)
-  const [revealing, setRevealing] = useState<'key' | 'passcode' | null>(null)
+  const [pending, setPending] = useState<PendingAction | null>(null)
   const [revoking, setRevoking] = useState(false)
   const [reason, setReason] = useState('')
 
-  const loadPem = async (fmt: 'pem' | 'chain') => {
-    const r = await api.downloadCertificate(cert.id, fmt)
-    setPem({ fmt, text: r.pem })
-  }
+  const filenameBase = safeFilename(cert.common_name)
+
+  const viewPem = (fmt: 'pem' | 'chain') => setPending({
+    title: 'Confirm your password',
+    description: `Re-enter your current password to view the ${fmt === 'chain' ? 'chain' : 'certificate'} PEM. This access is logged.`,
+    run: async password => { const r = await api.downloadCertificate(cert.id, fmt, password); setPem({ fmt, text: r.pem }) },
+  })
+
+  const downloadPem = (fmt: 'pem' | 'chain') => setPending({
+    title: 'Confirm your password',
+    description: `Re-enter your current password to download the ${fmt === 'chain' ? 'chain' : 'certificate'} PEM. This access is logged.`,
+    run: async password => {
+      const r = await api.downloadCertificate(cert.id, fmt, password)
+      downloadFile(`${filenameBase}${fmt === 'chain' ? '-chain' : ''}.pem`, r.pem)
+    },
+  })
+
+  const revealSecret = (field: 'key' | 'passcode') => setPending({
+    title: 'Confirm your password',
+    description: `Re-enter your current password to reveal the ${field === 'key' ? 'private key' : 'install passcode'}. This access is logged.`,
+    run: async password => {
+      const res = await api.revealCertificateSecret(cert.id, field, password)
+      setPem({ fmt: field === 'key' ? 'private key' : 'passcode', text: (field === 'key' ? res.key : res.passcode) ?? '' })
+    },
+  })
+
+  const downloadSecret = (field: 'key' | 'passcode') => setPending({
+    title: 'Confirm your password',
+    description: `Re-enter your current password to download the ${field === 'key' ? 'private key' : 'install passcode'}. This access is logged.`,
+    run: async password => {
+      const res = await api.revealCertificateSecret(cert.id, field, password)
+      const value = (field === 'key' ? res.key : res.passcode) ?? ''
+      downloadFile(field === 'key' ? `${filenameBase}-key.pem` : `${filenameBase}-passcode.txt`, value, field === 'key' ? 'application/x-pem-file' : 'text/plain')
+    },
+  })
 
   const doRevoke = async () => {
     if (!confirm(`Revoke certificate '${cert.common_name}'? This cannot be undone.`)) return
@@ -229,14 +232,22 @@ function DetailModal({ cert, isAdmin, onClose, onRevoked }: { cert: Certificate;
           )}
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap mb-4">
-          <button onClick={() => loadPem('pem')} className="text-xs bg-gray-800 hover:bg-gray-700 text-white border border-gray-700 rounded px-3 py-1.5 transition-colors">View Certificate PEM</button>
-          <button onClick={() => loadPem('chain')} className="text-xs bg-gray-800 hover:bg-gray-700 text-white border border-gray-700 rounded px-3 py-1.5 transition-colors">View Chain PEM</button>
+        <div className="grid grid-flow-col grid-rows-2 gap-2 w-fit mb-4">
+          <button onClick={() => viewPem('pem')} className="text-xs bg-gray-800 hover:bg-gray-700 text-white border border-gray-700 rounded px-3 py-1.5 transition-colors">View Certificate PEM</button>
+          <button onClick={() => downloadPem('pem')} className="text-xs bg-gray-800 hover:bg-gray-700 text-sky-300 border border-sky-800/60 rounded px-3 py-1.5 transition-colors">Download Certificate</button>
+          <button onClick={() => viewPem('chain')} className="text-xs bg-gray-800 hover:bg-gray-700 text-white border border-gray-700 rounded px-3 py-1.5 transition-colors">View Chain PEM</button>
+          <button onClick={() => downloadPem('chain')} className="text-xs bg-gray-800 hover:bg-gray-700 text-sky-300 border border-sky-800/60 rounded px-3 py-1.5 transition-colors">Download Chain</button>
           {isAdmin && cert.has_private_key && (
-            <button onClick={() => setRevealing('key')} className="text-xs bg-gray-800 hover:bg-gray-700 text-amber-300 border border-amber-800/60 rounded px-3 py-1.5 transition-colors">Reveal Private Key</button>
+            <>
+              <button onClick={() => revealSecret('key')} className="text-xs bg-gray-800 hover:bg-gray-700 text-amber-300 border border-amber-800/60 rounded px-3 py-1.5 transition-colors">Reveal Private Key</button>
+              <button onClick={() => downloadSecret('key')} className="text-xs bg-gray-800 hover:bg-gray-700 text-amber-300 border border-amber-800/60 rounded px-3 py-1.5 transition-colors">Download Private Key</button>
+            </>
           )}
           {isAdmin && cert.has_passcode && (
-            <button onClick={() => setRevealing('passcode')} className="text-xs bg-gray-800 hover:bg-gray-700 text-amber-300 border border-amber-800/60 rounded px-3 py-1.5 transition-colors">Reveal Passcode</button>
+            <>
+              <button onClick={() => revealSecret('passcode')} className="text-xs bg-gray-800 hover:bg-gray-700 text-amber-300 border border-amber-800/60 rounded px-3 py-1.5 transition-colors">Reveal Passcode</button>
+              <button onClick={() => downloadSecret('passcode')} className="text-xs bg-gray-800 hover:bg-gray-700 text-amber-300 border border-amber-800/60 rounded px-3 py-1.5 transition-colors">Download Passcode</button>
+            </>
           )}
         </div>
 
@@ -264,14 +275,7 @@ function DetailModal({ cert, isAdmin, onClose, onRevoked }: { cert: Certificate;
 
         <button onClick={onClose} className="w-full mt-4 px-4 py-2 text-sm border border-gray-700 hover:border-gray-500 text-white rounded-lg transition-colors">Close</button>
       </div>
-      {revealing && (
-        <RevealSecretModal
-          certId={cert.id}
-          field={revealing}
-          onClose={() => setRevealing(null)}
-          onRevealed={value => setPem({ fmt: revealing === 'key' ? 'private key' : 'passcode', text: value })}
-        />
-      )}
+      {pending && <ConfirmPasswordModal title={pending.title} description={pending.description} onConfirm={pending.run} onClose={() => setPending(null)} />}
     </div>
   )
 }

@@ -7,12 +7,15 @@ secrets (private key / install passcode).
 
 Security model for secrets (private_key_enc, passcode_enc): both are
 Fernet-encrypted at rest (app/cert/crypto.py) and are NEVER included in
-list/detail responses or the plain GET download route — only
-POST /{id}/reveal-secret returns the decrypted value, and that route
-requires the caller to re-enter their current password (step-up
-re-auth), same bar regardless of whether the cert was issued by pktCert's
-own CA or uploaded from an external one. Every successful reveal is
-logged to cert_events for audit.
+list/detail responses — only POST /{id}/reveal-secret returns the
+decrypted value, and that route requires the caller to re-enter their
+current password (step-up re-auth), same bar regardless of whether the
+cert was issued by pktCert's own CA or uploaded from an external one.
+
+Every certificate download, including the plain public cert/chain PEM
+via POST /{id}/download, requires that same password re-entry every
+time (no client-side caching across downloads) and is logged to
+cert_events for audit — same bar as reveal-secret.
 """
 from __future__ import annotations
 
@@ -87,23 +90,40 @@ async def get_certificate(cert_id: int, user: CurrentUser, db: aiosqlite.Connect
     return _cert_out(row)
 
 
-@router.get("/{cert_id}/download")
+class DownloadRequest(BaseModel):
+    fmt: str = "pem"  # pem (leaf only) | chain
+    password: str
+
+
+@router.post("/{cert_id}/download")
 async def download_certificate(
-    cert_id: int, user: AdminUser, fmt: str = "pem", db: aiosqlite.Connection = Depends(get_db)
+    cert_id: int, body: DownloadRequest, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)
 ):
-    """fmt: pem (leaf only) | chain — public certificate data only. The
-    private key and install passcode are secrets and are never served from
-    a plain GET; use POST /{id}/reveal-secret (requires re-entering your
-    current password) for those instead."""
+    """Every download — even of the public certificate/chain PEM, not just
+    the private key or passcode — requires re-entering the caller's current
+    password, same step-up re-auth as /reveal-secret, and is logged the same
+    way. Nothing is cached client-side: each download prompts again."""
+    if body.fmt not in ("pem", "chain"):
+        raise HTTPException(400, "fmt must be 'pem' or 'chain' — use POST /{id}/reveal-secret for the private key or passcode")
+
+    async with db.execute("SELECT hashed_password FROM users WHERE id = ?", (user["id"],)) as cur:
+        user_row = await cur.fetchone()
+    if not user_row or not verify_password(body.password, user_row["hashed_password"]):
+        raise HTTPException(401, "Incorrect password")
+
     async with db.execute("SELECT * FROM certificates WHERE id = ?", (cert_id,)) as cur:
         row = await cur.fetchone()
     if not row:
         raise HTTPException(404, "Certificate not found")
 
-    if fmt == "chain":
+    await db.execute(
+        "INSERT INTO cert_events (certificate_id, event_type, message) VALUES (?, 'downloaded', ?)",
+        (cert_id, f"{body.fmt} downloaded by {user['username']}"),
+    )
+    await db.commit()
+
+    if body.fmt == "chain":
         return {"pem": row["chain_pem"] or row["cert_pem"]}
-    if fmt not in ("pem",):
-        raise HTTPException(400, "fmt must be 'pem' or 'chain' — use POST /{id}/reveal-secret for the private key or passcode")
     return {"pem": row["cert_pem"]}
 
 

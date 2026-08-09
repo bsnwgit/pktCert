@@ -8,7 +8,6 @@ const Dashboard               = lazy(() => import('./pages/Dashboard'))
 const Certificates            = lazy(() => import('./pages/Certificates'))
 const ScanTargets             = lazy(() => import('./pages/ScanTargets'))
 const CertificateAuthorities  = lazy(() => import('./pages/CertificateAuthorities'))
-const Templates               = lazy(() => import('./pages/Templates'))
 const Alerts                  = lazy(() => import('./pages/Alerts'))
 const Logs                    = lazy(() => import('./pages/Logs'))
 const Settings                = lazy(() => import('./pages/Settings'))
@@ -65,11 +64,6 @@ export default function App() {
           <Route path="/certificate-authorities" element={
             <ProtectedRoute>
               <Suspense fallback={<PageFallback />}><CertificateAuthorities /></Suspense>
-            </ProtectedRoute>
-          } />
-          <Route path="/templates" element={
-            <ProtectedRoute>
-              <Suspense fallback={<PageFallback />}><Templates /></Suspense>
             </ProtectedRoute>
           } />
           <Route path="/alerts" element={
