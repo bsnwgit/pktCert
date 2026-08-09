@@ -70,10 +70,9 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
 
 const NAV = [
   { to: '/',                        label: 'Dashboard',              icon: '◑', adminOnly: false },
-  { to: '/certificates',            label: 'Certificates',           icon: '▤', adminOnly: false },
-  { to: '/scan-targets',            label: 'Scan Targets',           icon: '⌕', adminOnly: false, dividerBefore: true },
+  { to: '/scan-targets',            label: 'Scan Targets',           icon: '⌕', adminOnly: false },
+  { to: '/certificates',            label: 'Certificates',           icon: '▤', adminOnly: false, dividerBefore: true },
   { to: '/certificate-authorities', label: 'Certificate Authorities', icon: '⛨', adminOnly: false },
-  { to: '/templates',               label: 'Templates',              icon: '▦', adminOnly: false },
   { to: '/alerts',                  label: 'Alerts',                 icon: '△', adminOnly: false, dividerBefore: true },
   { to: '/logs',                    label: 'Logs',                   icon: '☰', adminOnly: false },
   { to: '/settings',                label: 'Settings',               icon: '⚙', adminOnly: true, dividerBefore: true },

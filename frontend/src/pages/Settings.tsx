@@ -4,6 +4,7 @@ import { api, User, UserIn, Integration, IntegrationInput, SslStatus, UserApiKey
 import { useAuth } from '../store/auth'
 import HelpButton from '../components/HelpButton'
 import { copyToClipboard } from '../utils/clipboard'
+import Templates from './Templates'
 
 // -- Generic helpers -------------------------------------------------------------
 type SettingsMap = Record<string, unknown>
@@ -737,9 +738,14 @@ const setFieldsApi: Record<string, (fields: string[]) => Promise<UserApiKey>> = 
 // IP-reputation one) so it's excluded here.
 const MODAL_PROVIDERS = ['ipinfo', 'ipapi_is', 'abuseipdb', 'mxtoolbox', 'ipqualityscore']
 
-function ApiKeysTab({ lucidToken, onLucidChange, lucidSave }: {
-  lucidToken: string; onLucidChange: (v: string) => void
-  lucidSave: { save: () => Promise<void>; saving: boolean; saved: boolean; error: string }
+function ApiKeysTab({ title, help, providers, lucid }: {
+  title: string
+  help: React.ReactNode
+  providers: string[]
+  lucid?: {
+    token: string; onChange: (v: string) => void
+    save: { save: () => Promise<void>; saving: boolean; saved: boolean; error: string }
+  }
 }) {
   const { user } = useAuth()
   const [keys, setKeys]       = useState<UserApiKey[]>([])
@@ -788,7 +794,11 @@ function ApiKeysTab({ lucidToken, onLucidChange, lucidSave }: {
   function load() {
     setLoading(true)
     api.getUserApiKeys()
-      .then(rows => { setKeys(rows); setDrafts(Object.fromEntries(rows.map(r => [r.provider, r.api_key]))) })
+      .then(rows => {
+        const filtered = rows.filter(r => providers.includes(r.provider))
+        setKeys(filtered)
+        setDrafts(Object.fromEntries(filtered.map(r => [r.provider, r.api_key])))
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
   }
@@ -827,11 +837,8 @@ function ApiKeysTab({ lucidToken, onLucidChange, lucidSave }: {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2">
-        <h2 className="text-lg font-semibold text-white">User Keys</h2>
-        <HelpButton title="User Keys — How It Works">
-          <p>External API keys for lookup tools (IP reputation, geolocation, Certificate Transparency search) are <span className="text-gray-300 font-medium">personal, not shared</span> — each user stores their own key here under their own account, and only that user's own requests use it. Nobody else, including admins, can see the key's value.</p>
-          <p>Censys credentials go in as <span className="text-gray-300 font-medium">api_id:api_secret</span> — one field, colon-separated. crt.sh needs no key and is used automatically wherever CT search runs. Leave any field blank and save to clear that key.</p>
-        </HelpButton>
+        <h2 className="text-lg font-semibold text-white">{title}</h2>
+        <HelpButton title={`${title} — How It Works`}>{help}</HelpButton>
       </div>
       <p className="text-sm text-white">
         Signed in as <span className="text-white font-medium">{user?.username}</span> — these keys apply to your account only.
@@ -923,29 +930,31 @@ function ApiKeysTab({ lucidToken, onLucidChange, lucidSave }: {
         </div>
       )}
 
-      <div className="pt-2 border-t border-gray-800 max-w-lg">
-        <p className="text-xs font-semibold text-white uppercase tracking-wider mt-4 mb-1">Lucidchart</p>
-        <label className="block text-xs text-white mb-1">API token</label>
-        <div className="flex items-center gap-2">
-          <input
-            type="password"
-            value={lucidToken}
-            onChange={e => onLucidChange(e.target.value)}
-            placeholder="eyJ…"
-            className={inp}
-          />
-          <button
-            onClick={lucidSave.save}
-            disabled={lucidSave.saving}
-            className="shrink-0 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
-          >
-            {lucidSave.saving ? 'Saving…' : 'Save'}
-          </button>
+      {lucid && (
+        <div className="pt-2 border-t border-gray-800 max-w-lg">
+          <p className="text-xs font-semibold text-white uppercase tracking-wider mt-4 mb-1">Lucidchart</p>
+          <label className="block text-xs text-white mb-1">API token</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="password"
+              value={lucid.token}
+              onChange={e => lucid.onChange(e.target.value)}
+              placeholder="eyJ…"
+              className={inp}
+            />
+            <button
+              onClick={lucid.save.save}
+              disabled={lucid.save.saving}
+              className="shrink-0 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+            >
+              {lucid.save.saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+          {lucid.save.saved && <p className="text-xs text-green-400 mt-1">Saved</p>}
+          {lucid.save.error && <p className="text-xs text-red-400 mt-1">{lucid.save.error}</p>}
+          <p className="text-xs text-gray-500 mt-1">Personal Access Token from lucid.co → Account → API Tokens. Required for topology export to Lucidchart.</p>
         </div>
-        {lucidSave.saved && <p className="text-xs text-green-400 mt-1">Saved</p>}
-        {lucidSave.error && <p className="text-xs text-red-400 mt-1">{lucidSave.error}</p>}
-        <p className="text-xs text-gray-500 mt-1">Personal Access Token from lucid.co → Account → API Tokens. Required for topology export to Lucidchart.</p>
-      </div>
+      )}
     </div>
   )
 }
@@ -1360,7 +1369,7 @@ function UsersTab() {
 }
 
 // -- Main page ---------------------------------------------------------------------
-type TabId = 'general' | 'security' | 'data' | 'notifications' | 'apikeys' | 'system' | 'discovery'
+type TabId = 'general' | 'security' | 'data' | 'notifications' | 'apikeys' | 'system' | 'certkeys' | 'templates' | 'discovery'
 
 const TABS: Array<{ id: TabId; label: string; adminOnly?: boolean; gapBefore?: boolean }> = [
   { id: 'general',       label: 'General' },
@@ -1369,7 +1378,9 @@ const TABS: Array<{ id: TabId; label: string; adminOnly?: boolean; gapBefore?: b
   { id: 'notifications', label: 'Notifications' },
   { id: 'apikeys',       label: 'User Keys' },
   { id: 'system',        label: 'System' },
-  { id: 'discovery',     label: 'Discovery & Alerts', gapBefore: true },
+  { id: 'certkeys',      label: 'Cert Keys',         gapBefore: true },
+  { id: 'templates',     label: 'Templates' },
+  { id: 'discovery',     label: 'Discovery & Alerts' },
 ]
 
 // -- System tab — open-source packages actually used by this app (requirements.txt +
@@ -2223,9 +2234,17 @@ export default function Settings() {
         </Section>
       )}
 
-      {/* User Keys */}
+      {/* User Keys — IP reputation/geolocation lookup providers, plus Lucidchart export */}
       {tab === 'apikeys' && (
-        <ApiKeysTab lucidToken={str('lucid_api_token')} onLucidChange={v => set('lucid_api_token', v)} lucidSave={lucidSave} />
+        <ApiKeysTab
+          title="User Keys"
+          providers={['abuseipdb', 'ipqualityscore', 'ipinfo', 'ipapi_is', 'mxtoolbox']}
+          lucid={{ token: str('lucid_api_token'), onChange: v => set('lucid_api_token', v), save: lucidSave }}
+          help={<>
+            <p>External API keys for lookup tools (IP reputation, geolocation) are <span className="text-gray-300 font-medium">personal, not shared</span> — each user stores their own key here under their own account, and only that user's own requests use it. Nobody else, including admins, can see the key's value.</p>
+            <p>Leave a field blank and save to clear that key.</p>
+          </>}
+        />
       )}
 
       {/* System — version/about info */}
@@ -2291,6 +2310,21 @@ export default function Settings() {
         </div>
       )}
 
+      {/* Templates — issuance templates (key algorithm/size, validity, EKU), moved here from its own top-level page */}
+      {/* Cert Keys — external API keys used specifically for certificate/CT search (currently just Censys) */}
+      {tab === 'certkeys' && (
+        <ApiKeysTab
+          title="Cert Keys"
+          providers={['censys']}
+          help={<>
+            <p>External API keys used for certificate-related lookups are <span className="text-gray-300 font-medium">personal, not shared</span> — each user stores their own key here under their own account, and only that user's own requests use it. Nobody else, including admins, can see the key's value.</p>
+            <p>Censys credentials go in as <span className="text-gray-300 font-medium">api_id:api_secret</span> — one field, colon-separated. crt.sh needs no key and is used automatically wherever CT search runs. Leave the field blank and save to clear the key.</p>
+          </>}
+        />
+      )}
+
+      {tab === 'templates' && <Templates />}
+
       {/* Discovery & Alerts — app-specific, defaults for new Scan Targets and CT search */}
       {tab === 'discovery' && (
         <Section title="Discovery & Alerts" onSave={discoverySave.save} saving={discoverySave.saving} saved={discoverySave.saved} error={discoverySave.error}
@@ -2298,7 +2332,7 @@ export default function Settings() {
             title: 'Discovery & Alerts — How It Works',
             content: <>
               <p>These are <span className="text-gray-300 font-medium">defaults</span> only — every Scan Target can still override its own schedule and port list. They just pre-fill the "New scan target" form.</p>
-              <p><span className="text-gray-300 font-medium">CT auto-discovery</span> periodically searches crt.sh (and Censys, if a key is set under User Keys) for certificates matching each watched domain, adding anything new to the inventory automatically.</p>
+              <p><span className="text-gray-300 font-medium">CT auto-discovery</span> periodically searches crt.sh (and Censys, if a key is set under Cert Keys) for certificates matching each watched domain, adding anything new to the inventory automatically.</p>
               <p><span className="text-gray-300 font-medium">Expiry warning</span> is the default threshold (days before <code className="text-gray-300">not_after</code>) a new "Certificate expiring soon" alert rule pre-fills — existing rules keep whatever threshold they were saved with.</p>
             </>,
           }}
