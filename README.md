@@ -15,7 +15,20 @@ suite) with a short in-context explainer — no separate user manual.
 
 **Default port:** `8763` (HTTP)
 
+**Deployment status:** built, verified end-to-end, and installed as a live
+systemd service on an internal Linux host.
+
 ---
+
+## Documentation
+
+This README is the technical reference. For task-oriented guides (also
+readable in-app via the **Documentation** link in the sidebar, no repo
+checkout needed):
+
+- [docs/USER_GUIDE.md](docs/USER_GUIDE.md) — day-to-day usage: inventory, scanning, issuing certs
+- [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md) — install, configure, operate
+- [docs/PKI-and-Discovery.md](docs/PKI-and-Discovery.md) — CA hierarchy, templates, CSR signing, and CT search in depth
 
 ## Table of Contents
 
@@ -30,12 +43,15 @@ suite) with a short in-context explainer — no separate user manual.
 - [Certificate Authorities](#certificate-authorities)
 - [Issuance Templates](#issuance-templates)
 - [Issuing & Revoking Certificates](#issuing--revoking-certificates)
+- [External Certificates & Secret Storage](#external-certificates--secret-storage)
 - [Configuration Reference](#configuration-reference)
 - [Running & Managing the Service](#running--managing-the-service)
 - [Roles & Auth](#roles--auth)
 - [AI Assistant](#ai-assistant)
 - [Alerting](#alerting)
 - [Suite Integration](#suite-integration)
+- [User Keys & IP Lookup](#user-keys--ip-lookup)
+- [pktHub NOC Widgets](#pkthub-noc-widgets)
 - [Backup & Restore](#backup--restore)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
@@ -47,8 +63,8 @@ suite) with a short in-context explainer — no separate user manual.
 ## Quick Start
 
 ```bash
-git clone git@github.com:bsnwgit/pktcert.git
-cd pktcert
+git clone git@github.com:bsnwgit/pktCert.git
+cd pktCert
 bash install.sh
 ```
 
@@ -120,9 +136,9 @@ live under Settings → Discovery & Alerts.
 ## Certificate Inventory
 
 The Certificates page is the unified view of everything pktCert knows
-about — scanned, CT-discovered, or internally issued. Status
-(valid/expiring/expired/revoked) updates automatically as certificates
-approach or pass their expiration date.
+about — scanned, CT-discovered, internally issued, or uploaded from an
+external CA. Status (valid/expiring/expired/revoked) updates automatically
+as certificates approach or pass their expiration date.
 
 ## Certificate Authorities
 
@@ -148,6 +164,22 @@ encrypted for later download. Signing an externally-generated CSR (so the
 private key never leaves the requester's machine) is available via the API
 (`POST /api/certificates/csr`). Revoking a certificate is terminal, marks it
 in the inventory, and includes it in its CA's next CRL.
+
+## External Certificates & Secret Storage
+
+Certificates issued by an outside CA (purchased, Let's Encrypt, etc.) can
+be uploaded directly — "+ Upload External Certificate" on the Certificates
+page accepts either separate PEM cert/key files or a single PKCS#12
+(.pfx/.p12) bundle, plus an optional free-text **install/use passcode**
+(e.g. a PFX export password, or a note ops needs to install the cert).
+
+Both the private key and the passcode are Fernet-encrypted at rest and are
+**never** returned by a plain `GET` — reading either one requires
+`POST /api/certificates/{id}/reveal-secret` with your *current* password
+re-entered (step-up re-auth), and every successful reveal is written to
+the audit log (`cert_events`). This bar applies equally to internally
+issued certificates and externally uploaded ones — there's one security
+model for every stored secret, not a weaker one for uploads.
 
 ## Configuration Reference
 
@@ -188,9 +220,28 @@ Slack, PagerDuty, TraceCat).
 
 ## Suite Integration
 
-Settings → Security → Suite Integration shows this app's inbound Suite
-Token — copy it into pktHub's App Manager when registering pktCert so
-pktHub can proxy into it with users already signed in.
+Settings → Security → Suite Integration covers both directions: the
+inbound Suite Token pktHub uses to proxy into pktCert with users already
+signed in, and outbound **Sibling pkt Apps** connections (named, reusable
+— e.g. pktIPAM, to resolve a scanned certificate's host against pktIPAM's
+internal address inventory over the same authenticated channel).
+
+## User Keys & IP Lookup
+
+Settings → User Keys holds per-user, personal (never shared, never
+admin-visible) API keys for two things: the suite-wide IP Lookup provider
+set (AbuseIPDB, ipinfo.io, ipapi.is, MXToolbox, IPQualityScore — the same
+providers every pkt* app exposes, for looking up any IP that shows up in
+the data, e.g. a scanned certificate's host) and **Censys**, a
+pktCert-specific provider for Certificate Transparency / cert search
+(entered as `api_id:api_secret`). crt.sh needs no key and is used
+automatically wherever CT search runs.
+
+## pktHub NOC Widgets
+
+pktCert exposes three widgets for pktHub's NOC Builder dashboards:
+Certificate Summary (status tile counts), Expiring Certificates (soonest
+first), and Active Alerts — see `GET /api/widgets/manifest`.
 
 ## Backup & Restore
 
