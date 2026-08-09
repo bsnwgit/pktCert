@@ -4,6 +4,7 @@ pktCert — FastAPI application entry point.
 from __future__ import annotations
 
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -40,6 +41,24 @@ from app.api import (
 
 settings = get_settings()
 log = logging.getLogger("pktcert")
+
+# install.sh always replaces these with a real random value before first
+# run — reaching here with the placeholder still in place means config.yaml
+# is missing/broken (or install.sh was skipped), and every JWT/encrypted
+# secret would otherwise be forgeable/decryptable by anyone who reads this
+# public source. Fail closed instead of silently signing tokens with a
+# known key.
+_PLACEHOLDER_SECRETS = {
+    "secret_key": "CHANGE_ME_IN_PRODUCTION_secret_key_32chars",
+    "credential_key": "CHANGE_ME_generate_with_fernet_generate_key",
+}
+for _field, _placeholder in _PLACEHOLDER_SECRETS.items():
+    if getattr(settings, _field) == _placeholder:
+        raise RuntimeError(
+            f"config.yaml has no real '{_field}' set (still the placeholder value) — "
+            "refusing to start with a publicly-known secret. Run install.sh, or set "
+            f"{_field} in config.yaml yourself (see config.example.yaml)."
+        )
 
 
 @asynccontextmanager
@@ -152,7 +171,7 @@ if _frontend_dist.exists():
         # pktHub suite-token bootstrap — set sso cookies so React logs in automatically
         _cfg = settings
         _suite_tk = request.headers.get("x-suite-token", "")
-        if _suite_tk and _cfg.suite_token and _suite_tk == _cfg.suite_token:
+        if _suite_tk and _cfg.suite_token and secrets.compare_digest(_suite_tk, _cfg.suite_token):
             from datetime import datetime, timedelta, timezone
             from jose import jwt as _jose_jwt
             from app.dependencies import _SUITE_ROLE_MAP

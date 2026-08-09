@@ -19,14 +19,15 @@ import json
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app.dependencies import CurrentUser
+from app.dependencies import AdminUser, CurrentUser
 
 router = APIRouter()
 
 
 @router.get("/token")
-async def get_suite_token(request: Request):
-    """Return the current suite token. Lazily generates one if not set."""
+async def get_suite_token(request: Request, user: AdminUser):
+    """Return the current suite token. Lazily generates one if not set.
+    Admin-only: this token grants full inter-app suite access to this instance."""
     from app.config import get_settings
     import aiosqlite, secrets as _sec
     settings = get_settings()
@@ -49,9 +50,10 @@ async def get_suite_token(request: Request):
 
 
 @router.post("/register")
-async def suite_register(request: Request):
+async def suite_register(request: Request, user: AdminUser):
     """
     Manual token override — stores a new suite token.
+    Admin-only: this token grants full inter-app suite access to this instance.
     Body: {"suite_token": "<new_token>"}
     """
     from app.config import get_settings
@@ -79,9 +81,10 @@ async def suite_register(request: Request):
 
 
 @router.post("/regenerate")
-async def regenerate_suite_token(request: Request):
+async def regenerate_suite_token(request: Request, user: AdminUser):
     """
     Replace the suite token with a freshly generated one.
+    Admin-only: this token grants full inter-app suite access to this instance.
     Use when you need to revoke current pktHub access.
     After calling this, re-register the app in pktHub with the new token.
     """
