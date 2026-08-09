@@ -131,8 +131,13 @@ export const api = {
   getCertificates: (params?: { status?: string; source?: string; ca_id?: number; search?: string; limit?: number }) =>
     request<Certificate[]>(`/certificates${toQueryString(params)}`),
   getCertificate: (id: number) => request<Certificate>(`/certificates/${id}`),
-  downloadCertificate: (id: number, fmt: 'pem' | 'chain' = 'pem') =>
-    request<{ pem: string }>(`/certificates/${id}/download${toQueryString({ fmt })}`),
+  // Step-up re-auth, same as revealCertificateSecret: every download, even of
+  // the public cert/chain PEM, requires the current password again — no
+  // client-side caching, and every call is audit-logged server-side.
+  downloadCertificate: (id: number, fmt: 'pem' | 'chain', password: string) =>
+    request<{ pem: string }>(`/certificates/${id}/download`, {
+      method: 'POST', body: JSON.stringify({ fmt, password }),
+    }),
   issueCertificate: (body: { common_name: string; sans: string[]; ca_id: number; template_id: number }) =>
     request<Certificate & { private_key_pem?: string }>('/certificates/issue', { method: 'POST', body: JSON.stringify(body) }),
   signCsr: (body: { csr_pem: string; ca_id: number; template_id: number }) =>
