@@ -75,6 +75,21 @@ async def require_analyst(user: Annotated[dict, Depends(get_current_user)]) -> d
     return user
 
 
+async def require_suite_token(request: Request) -> None:
+    """
+    Gate for endpoints that are embedded unauthenticated (e.g. pktHub NOC
+    Builder widget iframes, see app/api/widgets.py) and therefore can't go
+    through the normal login/session flow, but still must not be reachable
+    by literally anyone on the network. Requires a valid X-Suite-Token —
+    the same trusted-proxy secret used by get_current_user above — and
+    nothing else (no fallback to a user session).
+    """
+    settings = get_settings()
+    suite_token = request.headers.get("x-suite-token", "")
+    if not (suite_token and settings.suite_token and secrets.compare_digest(suite_token, settings.suite_token)):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Valid X-Suite-Token required")
+
+
 CurrentUser  = Annotated[dict, Depends(get_current_user)]
 AdminUser    = Annotated[dict, Depends(require_admin)]
 AnalystUser  = Annotated[dict, Depends(require_analyst)]

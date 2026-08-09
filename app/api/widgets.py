@@ -7,12 +7,18 @@ Views:    GET /api/widgets/{id}      → server-rendered HTML page (iframe targe
 from __future__ import annotations
 
 import aiosqlite
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 
 from app.config import get_settings
+from app.dependencies import require_suite_token
 
-router = APIRouter()
+# These views are embedded as unauthenticated iframes by pktHub's NOC
+# Builder, so they can't require a login session — but they render internal
+# certificate inventory/alert data, so every route on this router requires
+# a valid X-Suite-Token (same trusted-proxy secret pktHub already sends on
+# every proxied request).
+router = APIRouter(dependencies=[Depends(require_suite_token)])
 _s     = get_settings()
 _DB    = _s.db_path
 
