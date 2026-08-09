@@ -402,6 +402,25 @@ def _parse_files_param(files: Optional[str]) -> Optional[set[str]]:
     return {f.strip() for f in files.split(",") if f.strip()}
 
 
+def _safe_tar_members(tar: tarfile.TarFile, dest: Path):
+    """
+    Yield only tar members whose extracted path resolves inside `dest`.
+    Blocks path traversal (../, absolute paths) and symlink/hardlink
+    escapes ("tarslip") from an uploaded/untrusted backup archive.
+    """
+    dest_root = dest.resolve()
+    for member in tar.getmembers():
+        member_path = (dest / member.name).resolve()
+        if member_path != dest_root and dest_root not in member_path.parents:
+            raise ValueError(f"Unsafe path in archive: {member.name}")
+        if member.issym() or member.islnk():
+            link_target = (dest / member.name).parent / member.linkname
+            link_target = link_target.resolve()
+            if link_target != dest_root and dest_root not in link_target.parents:
+                raise ValueError(f"Unsafe link target in archive: {member.name} -> {member.linkname}")
+        yield member
+
+
 def _do_restore(raw: bytes, cfg, files: Optional[set[str]]) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -410,7 +429,8 @@ def _do_restore(raw: bytes, cfg, files: Optional[set[str]]) -> dict:
 
         try:
             with tarfile.open(str(archive_path), "r:gz") as tar:
-                tar.extractall(tmp_path)
+                safe_members = list(_safe_tar_members(tar, tmp_path))
+                tar.extractall(tmp_path, members=safe_members)
         except Exception as e:
             return {"error": f"Failed to extract archive: {e}"}
 
