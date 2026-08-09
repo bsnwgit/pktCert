@@ -1,0 +1,37 @@
+# Template — install.sh substitutes __INSTALL_DIR__ / __LOG_DIR__ /
+# __SERVICE_USER__ / __SERVICE_GROUP__ before installing to systemd.
+# For a manual install, replace these placeholders yourself.
+#
+# Host/port are NOT set here — app/server.py reads them from config.yaml at
+# each process start, so Settings → General → Port only needs config.yaml
+# rewritten + a restart, not a unit file edit.
+[Unit]
+Description=pktCert Enterprise Certificate Management
+Documentation=https://github.com/bsnwgit/pktcert
+After=network.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_GROUP__
+WorkingDirectory=__INSTALL_DIR__
+
+Environment=PKTCERT_CONFIG=__INSTALL_DIR__/config.yaml
+Environment=PKTCERT_INSTALL_DIR=__INSTALL_DIR__
+
+ExecStart=__INSTALL_DIR__/venv/bin/python -m app.server
+
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=3
+
+StandardOutput=append:__LOG_DIR__/pktcert.log
+StandardError=append:__LOG_DIR__/pktcert.log
+
+NoNewPrivileges=yes
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
