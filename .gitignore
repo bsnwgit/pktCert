@@ -1,0 +1,72 @@
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib64/
+.eggs/
+pip-wheel-metadata/
+share/python-wheels/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# --- Runtime / secrets ------------------------------------------------------
+# real config (use config.example.yaml as template)
+config.yaml
+# SQLite databases
+*.db
+# Log files
+*.log
+logs/
+backups/
+
+# --- SSH keys / credentials -------------------------------------------------
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+.env
+.env.*
+!.env.example
+
+# --- Node / frontend ---------------------------------------------------------
+node_modules/
+# built output — produced by npm run build / install.sh
+frontend/dist/
+frontend/.vite/
+
+# --- OS / editor ---------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Test / coverage ---------------------------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Misc ---------------------------------------------------------------------
+*.bak
+*.orig

@@ -1,0 +1,46 @@
+# pktCert configuration
+# Copy to <install_dir>/config.yaml, or set PKTCERT_CONFIG=/path/to/config.yaml,
+# then restart the service.
+#
+# install.sh generates config.yaml from this file automatically, fills in
+# secret_key + credential_key, and appends install_dir — edit config.yaml
+# afterwards for any further changes.
+#
+# install_dir is the app root. Every on-disk path below (db_path, log_file,
+# ssl_dir) defaults to somewhere under install_dir and does NOT need to be
+# set explicitly — only uncomment one if you need that particular path to
+# live somewhere else.
+#
+# Scan targets, certificate authorities, templates, and alert rules are all
+# managed via the UI and stored in SQLite. This file only covers
+# infrastructure/startup settings.
+
+# -- Server --------------------------------------------------------------------
+host: "0.0.0.0"
+port: 8763
+workers: 2
+debug: false
+
+# -- App root — install.sh appends this automatically --------------------------
+# install_dir: "/opt/pktcert"
+
+# -- SQLite app database (optional override; default: <install_dir>/pktcert.db) --
+# db_path: "/opt/pktcert/pktcert.db"
+
+# -- JWT (generate with: openssl rand -hex 32) ----------------------------------
+secret_key: "CHANGE_ME_generate_with_openssl_rand_hex_32"
+
+# -- CA private key / secret encryption key (generate with the Fernet command below) --
+# python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+credential_key: "CHANGE_ME_generate_with_fernet_generate_key"
+
+# -- CORS (restrict to your actual origin in production) -----------------------
+cors_origins:
+  - "http://SERVER-IP:8763"
+
+# -- Logging ---------------------------------------------------------------------
+log_level: "info"
+# log_file: "/opt/pktcert/logs/pktcert.log"   # optional override; default: <install_dir>/logs/pktcert.log
+
+# -- SSL certificates (optional override; default: <install_dir>/ssl) ------------
+# ssl_dir: "/opt/pktcert/ssl"
