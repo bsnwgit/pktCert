@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, CertTemplate, CertificateAuthority } from '../api/client'
 import { useAuth } from '../store/auth'
 import HelpButton from '../components/HelpButton'
+import ValidityInput, { formatValidity } from '../components/ValidityInput'
 
 const KEY_USAGE_OPTIONS = ['digital_signature', 'key_encipherment', 'content_commitment', 'data_encipherment', 'key_agreement', 'key_cert_sign', 'crl_sign']
 const EKU_OPTIONS = ['server_auth', 'client_auth', 'code_signing', 'email_protection', 'ocsp_signing', 'time_stamping']
@@ -69,8 +70,8 @@ function TemplateForm({ initial, cas, onSave, onCancel, saving }: {
           </select>
         </div>
         <div>
-          <label className="block text-xs text-white mb-1">Validity (days)</label>
-          <input type="number" min={1} value={form.validity_days} onChange={e => set('validity_days', Number(e.target.value))} className={inp} />
+          <label className="block text-xs text-white mb-1">Validity</label>
+          <ValidityInput days={form.validity_days} onChange={v => set('validity_days', v)} className={inp} />
         </div>
         <div>
           <label className="block text-xs text-white mb-1">Default CA</label>
@@ -207,7 +208,7 @@ export default function Templates() {
               <tr key={t.id} className="hover:bg-gray-800/30 transition-colors">
                 <td className="px-4 py-3 font-medium text-white">{t.name}</td>
                 <td className="px-4 py-3 text-white text-xs">{t.key_algorithm.toUpperCase()} {t.key_size}</td>
-                <td className="px-4 py-3 text-white">{t.validity_days}d</td>
+                <td className="px-4 py-3 text-white">{formatValidity(t.validity_days)}</td>
                 <td className="px-4 py-3 text-white text-xs">{t.extended_key_usage.join(', ')}</td>
                 <td className="px-4 py-3 text-white text-xs">{caName(t.default_ca_id)}</td>
                 {isAdmin && (
