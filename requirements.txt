@@ -1,0 +1,34 @@
+# pktCert Python dependencies
+
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# Data validation
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# App database
+aiosqlite>=0.20.0
+
+# Auth
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.1.2
+httpx>=0.27.0
+python3-saml>=1.16.0
+
+# Notifications
+aiosmtplib>=3.0.1
+jinja2>=3.1.4
+
+# Secret-at-rest encryption (Fernet) + X.509/CA operations
+cryptography>=42.0.0
+
+# Config
+pyyaml>=6.0.1
+python-dotenv>=1.0.0
+
+# AI assistant
+anthropic>=0.30.0
