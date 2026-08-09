@@ -4,6 +4,7 @@ pktCert — FastAPI application entry point.
 from __future__ import annotations
 
 import logging
+import os.path
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -48,16 +49,28 @@ log = logging.getLogger("pktcert")
 # secret would otherwise be forgeable/decryptable by anyone who reads this
 # public source. Fail closed instead of silently signing tokens with a
 # known key.
+#
+# Checks BOTH known placeholder spellings: app/config.py's own in-code
+# fallback (used when the key is entirely absent from config.yaml) AND
+# config.example.yaml's placeholder text (what an operator would actually
+# have in config.yaml if they copied that file without editing it — a
+# different string from the code fallback, so checking only one leaves the
+# other route to a publicly-known secret completely unguarded).
 _PLACEHOLDER_SECRETS = {
-    "secret_key": "CHANGE_ME_IN_PRODUCTION_secret_key_32chars",
-    "credential_key": "CHANGE_ME_generate_with_fernet_generate_key",
+    "secret_key": {
+        "", "CHANGE_ME_IN_PRODUCTION_secret_key_32chars",
+        "CHANGE_ME_generate_with_openssl_rand_hex_32",
+    },
+    "credential_key": {
+        "", "CHANGE_ME_generate_with_fernet_generate_key",
+    },
 }
-for _field, _placeholder in _PLACEHOLDER_SECRETS.items():
-    if getattr(settings, _field) == _placeholder:
+for _field, _placeholders in _PLACEHOLDER_SECRETS.items():
+    if getattr(settings, _field) in _placeholders:
         raise RuntimeError(
-            f"config.yaml has no real '{_field}' set (still the placeholder value) — "
-            "refusing to start with a publicly-known secret. Run install.sh, or set "
-            f"{_field} in config.yaml yourself (see config.example.yaml)."
+            f"config.yaml has no real '{_field}' set (missing or still the placeholder "
+            "value) — refusing to start with a publicly-known secret. Run install.sh, "
+            f"or set {_field} in config.yaml yourself (see config.example.yaml)."
         )
 
 
@@ -163,7 +176,16 @@ if _frontend_dist.exists():
     async def serve_spa(request: Request, full_path: str):
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not found")
-        static_file = _frontend_dist / full_path
+        # Normalize-then-prefix-check (CodeQL's own documented pattern for
+        # py/path-injection) rather than pathlib's resolve()/is_relative_to,
+        # which its Python taint tracker doesn't recognize as a sanitizer.
+        _dist_root = os.path.normpath(str(_frontend_dist))
+        _candidate = os.path.normpath(os.path.join(_dist_root, full_path))
+        if not (_candidate == _dist_root or _candidate.startswith(_dist_root + os.sep)):
+            # Path traversal attempt (e.g. "../../config.yaml") — refuse to
+            # serve anything outside the frontend dist directory.
+            raise HTTPException(status_code=404, detail="Not found")
+        static_file = Path(_candidate)
         if static_file.exists() and static_file.is_file():
             return FileResponse(str(static_file))
         index = _frontend_dist / "index.html"
