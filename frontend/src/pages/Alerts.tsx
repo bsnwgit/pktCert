@@ -14,7 +14,7 @@ const CONDITION_LABEL: Record<AlertConditionType, string> = {
 }
 
 const THRESHOLD_CONDITIONS: AlertConditionType[] = ['cert_expiring', 'ca_expiring']
-const CHANNELS_AVAILABLE = ['inapp', 'email', 'webhook', 'slack']
+const CHANNELS_AVAILABLE = ['inapp', 'email', 'slack', 'pagerduty', 'webhook', 'tracecat']
 const PAGE_SIZE_OPTIONS = [25, 50, 75, 100]
 
 const SEV_STYLES: Record<string, string> = {
@@ -368,7 +368,8 @@ export default function Alerts() {
             <h1 className="text-xl font-bold text-white">Alerts</h1>
             <HelpButton title="Alerts — How It Works">
               <p>Rules watch certificate and CA expiration windows, revocations, and scan targets stuck in an error state — each rule fires an event when its condition is met, and auto-resolves once it clears (revocation is terminal and never auto-resolves).</p>
-              <p>Events can notify in-app, by email, webhook, or Slack depending on the channels a rule has enabled. Import Rules CSV lets you bulk-create rules instead of adding them one at a time.</p>
+              <p>Events notify on whichever channels a rule has enabled — in-app, email, Slack, PagerDuty, webhook, or TraceCat. Every channel except in-app must first be configured and enabled under Settings → Notifications; a rule targeting an unconfigured channel is skipped rather than failed. Only the tick that opens an event notifies, so a certificate that stays expiring won't re-notify every minute.</p>
+              <p>Import Rules CSV lets you bulk-create rules instead of adding them one at a time.</p>
             </HelpButton>
           </div>
           <p className="text-sm text-white mt-0.5">

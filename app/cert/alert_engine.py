@@ -16,11 +16,17 @@ Supported condition_type values:
                                (default 90 — CAs need longer lead time)
   scan_target_unreachable     - a scan target's last_status = 'error'
 
+A newly opened event is dispatched to whichever channels its rule enables
+(app/notifications.py), with every outcome recorded in notification_log.
+Only the opening tick notifies — an event that merely stays open does not
+re-notify, or an expiring certificate would page someone every 60 seconds
+until it was renewed.
+
 Also runs a nightly-scale expiry-status refresh so certificates.status
 (valid/expiring/expired) stays current even between scans, and exposes
 run_cleanup_once() for the Data -> Storage "Run Cleanup" button (trims old
-resolved alert_events, matching the retention pattern used across the
-suite).
+resolved alert_events and their notification_log rows, matching the
+retention pattern used across the suite).
 """
 from __future__ import annotations
 
@@ -31,6 +37,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import aiosqlite
+
+from app import notifications
 
 log = logging.getLogger("pktcert.alerts")
 
@@ -105,7 +113,8 @@ async def _fire_or_keep(db: aiosqlite.Connection, rule, certificate_id=None, ca_
     """Open a new alert_event if one isn't already active for this
     rule+target, and it hasn't auto-resolved within the rule's cooldown
     window (so a flapping condition doesn't reopen a new event every
-    evaluation tick)."""
+    evaluation tick). A newly opened event is then dispatched to whichever
+    channels the rule has enabled."""
     async with db.execute(
         """SELECT id FROM alert_events
            WHERE rule_id = ? AND active = 1
@@ -129,12 +138,45 @@ async def _fire_or_keep(db: aiosqlite.Connection, rule, certificate_id=None, ca_
         if recently_resolved:
             return
 
-    await db.execute(
+    cur = await db.execute(
         """INSERT INTO alert_events
            (rule_id, certificate_id, ca_id, severity, message, value, threshold, active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 1)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1) RETURNING id""",
         (rule["id"], certificate_id, ca_id, rule["severity"], message, value, rule["threshold"]),
     )
+    row = await cur.fetchone()
+    if row:
+        await _dispatch(db, rule, row[0], message, certificate_id, ca_id)
+
+
+async def _dispatch(db: aiosqlite.Connection, rule, event_id: int, message: str,
+                    certificate_id=None, ca_id=None) -> None:
+    """Send a newly opened alert to every channel its rule enables, recording
+    each outcome in notification_log.
+
+    Only fires for *newly opened* events, never on subsequent ticks that
+    merely keep an event open — otherwise an expiring certificate would
+    re-notify every 60 seconds until someone renewed it.
+    """
+    try:
+        channels = json.loads(rule["channels"])
+    except (TypeError, ValueError):
+        channels = ["inapp"]
+
+    details = {"certificate_id": certificate_id, "ca_id": ca_id,
+               "condition_type": rule["condition_type"]}
+
+    for channel in channels or ["inapp"]:
+        status, detail = await notifications.send_to_channel(
+            db, channel, rule_name=rule["name"], message=message,
+            severity=rule["severity"], event_id=event_id, details=details,
+        )
+        if status == "failed":
+            log.warning(f"Alert {event_id} delivery failed on {channel}: {detail}")
+        await db.execute(
+            "INSERT INTO notification_log (event_id, channel, status, error) VALUES (?, ?, ?, ?)",
+            (event_id, channel, status, detail if status != "sent" else None),
+        )
 
 
 async def _auto_resolve(db: aiosqlite.Connection, rule, still_bad_cert_ids: set, still_bad_ca_ids: set):
@@ -248,9 +290,23 @@ async def run_cleanup_once() -> dict:
     from app.config import get_settings
     settings = get_settings()
     async with aiosqlite.connect(settings.db_path) as db:
+        # notification_log rows go first and explicitly. The schema cascades
+        # them, but this connection doesn't turn foreign_keys on (SQLite
+        # defaults it off per-connection), so relying on the cascade here
+        # would silently strand them.
+        cur = await db.execute(
+            """DELETE FROM notification_log WHERE event_id IN (
+                   SELECT id FROM alert_events
+                   WHERE resolved = 1 AND resolved_at < datetime('now', '-90 days'))"""
+        )
+        removed_notifications = cur.rowcount
         cur = await db.execute(
             "DELETE FROM alert_events WHERE resolved = 1 AND resolved_at < datetime('now', '-90 days')"
         )
-        await db.commit()
         removed = cur.rowcount
-    return {"status": "ok", "removed_alert_events": removed}
+        await db.commit()
+    return {
+        "status": "ok",
+        "removed_alert_events": removed,
+        "removed_notification_log": removed_notifications,
+    }
