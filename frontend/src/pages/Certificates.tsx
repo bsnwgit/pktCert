@@ -41,6 +41,9 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
   const [sans, setSans] = useState('')
   const [caId, setCaId] = useState<number | ''>(cas[0]?.id ?? '')
   const [templateId, setTemplateId] = useState<number | ''>(templates[0]?.id ?? '')
+  const [protectKey, setProtectKey] = useState(false)
+  const [keyPassphrase, setKeyPassphrase] = useState('')
+  const [keyPassphrase2, setKeyPassphrase2] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [issued, setIssued] = useState<Certificate | null>(null)
@@ -48,11 +51,18 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
 
   const submit = async () => {
     if (!commonName.trim() || !caId || !templateId) return
+    if (protectKey) {
+      if (!keyPassphrase) { setError('Enter a key passphrase, or turn off key protection.'); return }
+      if (keyPassphrase !== keyPassphrase2) { setError('Key passphrases do not match.'); return }
+    }
     setSaving(true)
     setError('')
     try {
       const sanList = sans.split(',').map(s => s.trim()).filter(Boolean)
-      const cert = await api.issueCertificate({ common_name: commonName.trim(), sans: sanList, ca_id: Number(caId), template_id: Number(templateId) })
+      const cert = await api.issueCertificate({
+        common_name: commonName.trim(), sans: sanList, ca_id: Number(caId), template_id: Number(templateId),
+        ...(protectKey && keyPassphrase ? { key_passphrase: keyPassphrase } : {}),
+      })
       setIssued(cert)
       onIssued()
     } catch (e: any) {
@@ -94,6 +104,31 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
                   {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
               </div>
+              <div className="border-t border-gray-800 pt-3">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input type="checkbox" checked={protectKey} onChange={e => setProtectKey(e.target.checked)}
+                    className="rounded border-gray-600 bg-gray-800 text-sky-500 focus:ring-sky-500" />
+                  <span className="text-sm text-white">Protect the private key with a passphrase (optional)</span>
+                </label>
+                {protectKey && (
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <label className="block text-xs text-white mb-1">Key passphrase</label>
+                      <input type="password" value={keyPassphrase} onChange={e => setKeyPassphrase(e.target.value)}
+                        autoComplete="new-password" placeholder="Required to install the key on a remote server" className={inp} />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-white mb-1">Confirm passphrase</label>
+                      <input type="password" value={keyPassphrase2} onChange={e => setKeyPassphrase2(e.target.value)}
+                        autoComplete="new-password" placeholder="Re-enter passphrase" className={inp} />
+                    </div>
+                    <p className="text-xs text-amber-300/90">
+                      The exported private key will be encrypted with this passphrase. pktCert does not store it —
+                      whoever installs the key must enter it, and it cannot be recovered if lost.
+                    </p>
+                  </div>
+                )}
+              </div>
               {error && <p className="text-sm text-red-400">{error}</p>}
               <div className="flex items-center gap-3 pt-1">
                 <button onClick={submit} disabled={saving || !commonName.trim() || !caId || !templateId}
@@ -108,10 +143,16 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
           <>
             <h3 className="text-lg font-semibold text-emerald-400 mb-3">Certificate issued</h3>
             <p className="text-sm text-white mb-3">Copy the private key now — it won't be shown in plain text again after you close this dialog.</p>
+            {issued.key_encrypted && (
+              <p className="text-xs text-amber-300 mb-3 bg-amber-950/40 border border-amber-800/60 rounded-lg px-3 py-2">
+                🔒 This private key is passphrase-protected. Keep the passphrase you set — it's required to install
+                the key on a remote server and is not stored by pktCert.
+              </p>
+            )}
             {issued.private_key_pem && (
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs text-white">Private Key (PEM)</label>
+                  <label className="text-xs text-white">Private Key (PEM){issued.key_encrypted ? ' — encrypted' : ''}</label>
                   <div className="flex gap-3">
                     <button onClick={() => copyToClipboard(issued.private_key_pem!)} className="text-xs text-sky-400 hover:text-sky-300">Copy</button>
                     <button onClick={() => downloadFile(`${safeFilename(issued.common_name)}-key.pem`, issued.private_key_pem!)} className="text-xs text-sky-400 hover:text-sky-300">Download</button>
@@ -219,7 +260,7 @@ function DetailModal({ cert, isAdmin, onClose, onRevoked }: { cert: Certificate;
           <div><span className="text-white">Serial</span><p className="text-white font-mono text-xs break-all">{cert.serial_number}</p></div>
           <div><span className="text-white">Not Before</span><p className="text-white">{fmtDate(cert.not_before)}</p></div>
           <div><span className="text-white">Not After</span><p className="text-white">{fmtDate(cert.not_after)}</p></div>
-          <div><span className="text-white">Key</span><p className="text-white">{cert.key_algorithm?.toUpperCase()} {cert.key_size}</p></div>
+          <div><span className="text-white">Key</span><p className="text-white">{cert.key_algorithm?.toUpperCase()} {cert.key_size}{cert.key_encrypted ? ' 🔒' : ''}</p></div>
           <div><span className="text-white">Signature</span><p className="text-white">{cert.signature_algorithm}</p></div>
           <div className="col-span-2"><span className="text-white">Issuer</span><p className="text-white text-xs font-mono break-all">{cert.issuer}</p></div>
           <div className="col-span-2"><span className="text-white">Subject</span><p className="text-white text-xs font-mono break-all">{cert.subject}</p></div>
@@ -251,6 +292,10 @@ function DetailModal({ cert, isAdmin, onClose, onRevoked }: { cert: Certificate;
             </>
           )}
         </div>
+
+        {isAdmin && cert.has_private_key && cert.key_encrypted && (
+          <p className="text-xs text-amber-300/90 mb-4">🔒 This private key is passphrase-protected — the exported PEM is encrypted and needs the passphrase set at issue time to install. pktCert doesn't store that passphrase.</p>
+        )}
 
         {pem && (
           <div className="mb-4">

@@ -44,6 +44,7 @@ def _cert_out(r) -> dict:
         "status": r["status"], "source": r["source"], "scan_target_id": r["scan_target_id"],
         "host": r["host"], "port": r["port"], "ca_id": r["ca_id"], "template_id": r["template_id"],
         "has_private_key": bool(r["private_key_enc"]), "has_passcode": bool(r["passcode_enc"]),
+        "key_encrypted": bool(r["key_encrypted"]) if "key_encrypted" in r.keys() else False,
         "first_seen_at": r["first_seen_at"], "last_seen_at": r["last_seen_at"],
         "revoked_at": r["revoked_at"], "revoked_reason": r["revoked_reason"], "created_at": r["created_at"],
     }
@@ -237,9 +238,16 @@ class IssueRequest(BaseModel):
     sans: list[str] = []
     ca_id: int
     template_id: int
+    # Optional passphrase applied to the *exported* private key. When set, the
+    # returned/stored key PEM is encrypted with it, so installing the key on a
+    # remote server requires entering this secret. Not stored by pktCert.
+    key_passphrase: str = ""
 
 
-def _issue_sync(ca_row: dict, template_row: dict, common_name: str, sans: list[str], crl_url: str) -> tuple:
+def _issue_sync(
+    ca_row: dict, template_row: dict, common_name: str, sans: list[str],
+    crl_url: str, key_passphrase: str = "",
+) -> tuple:
     ca_cert = x509_utils.cert_from_pem(ca_row["cert_pem"])
     ca_key = x509_utils.key_from_pem(decrypt_str(ca_row["private_key_enc"]))
     leaf_key = x509_utils.generate_private_key(template_row["key_algorithm"], template_row["key_size"])
@@ -251,7 +259,7 @@ def _issue_sync(ca_row: dict, template_row: dict, common_name: str, sans: list[s
         extended_key_usage=json.loads(template_row["extended_key_usage_json"]),
         crl_url=crl_url,
     )
-    return x509_utils.cert_to_pem(cert), x509_utils.key_to_pem(leaf_key)
+    return x509_utils.cert_to_pem(cert), x509_utils.key_to_pem(leaf_key, key_passphrase or None)
 
 
 async def _get_crl_base_url(db: aiosqlite.Connection) -> str:
@@ -293,8 +301,9 @@ async def issue_certificate(body: IssueRequest, user: AdminUser, db: aiosqlite.C
     sans = list(dict.fromkeys([body.common_name, *body.sans]))
     crl_base_url = await _get_crl_base_url(db)
     crl_url = f"{crl_base_url}/crl/{body.ca_id}.crl"
+    key_passphrase = body.key_passphrase or ""
     cert_pem, key_pem = await asyncio.to_thread(
-        _issue_sync, dict(ca_row), dict(template_row), body.common_name, sans, crl_url
+        _issue_sync, dict(ca_row), dict(template_row), body.common_name, sans, crl_url, key_passphrase
     )
     info = x509_utils.parse_certificate(cert_pem)
 
@@ -302,12 +311,12 @@ async def issue_certificate(body: IssueRequest, user: AdminUser, db: aiosqlite.C
         """INSERT INTO certificates
            (common_name, san_json, issuer, subject, serial_number, fingerprint_sha256,
             not_before, not_after, key_algorithm, key_size, signature_algorithm,
-            status, source, cert_pem, private_key_enc, ca_id, template_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'issued', ?, ?, ?, ?) RETURNING *""",
+            status, source, cert_pem, private_key_enc, key_encrypted, ca_id, template_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'issued', ?, ?, ?, ?, ?) RETURNING *""",
         (info["common_name"], json.dumps(info["san"]), info["issuer"], info["subject"],
          info["serial_number"], info["fingerprint_sha256"], info["not_before"], info["not_after"],
          info["key_algorithm"], info["key_size"], info["signature_algorithm"],
-         cert_pem, encrypt_str(key_pem), body.ca_id, body.template_id),
+         cert_pem, encrypt_str(key_pem), int(bool(key_passphrase)), body.ca_id, body.template_id),
     )
     row = await cur.fetchone()
     await db.execute(

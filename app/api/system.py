@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from app.config import get_settings
 from app.dependencies import AdminUser, CurrentUser
 from app.backup import run_backup_sync, list_backups_sync, _read_backup_settings_sync
+from app.cert import x509_utils
 from app.version import get_version
 
 router = APIRouter()
@@ -202,38 +203,24 @@ async def upload_ssl_pfx(
     pfx_data = await pfx.read()
 
     def _extract() -> tuple[bool, str]:
-        import tempfile
+        # Parse in-process with the cryptography library instead of shelling
+        # out to `openssl pkcs12 -passin pass:...` — that exposed the private
+        # key passphrase in the process argument list (visible via ps /
+        # /proc/<pid>/cmdline to any local user) and needed an insecure
+        # temp file. The extracted key is written unencrypted so uvicorn can
+        # load it without an interactive prompt.
         _ssl_dir().mkdir(parents=True, exist_ok=True)
-        tmp = Path(tempfile.mktemp(suffix=".pfx"))
-        tmp.write_bytes(pfx_data)
         try:
-            cert_proc = subprocess.run(
-                ["openssl", "pkcs12",
-                 "-in", str(tmp),
-                 "-clcerts", "-nokeys",
-                 "-passin", f"pass:{passphrase}",
-                 "-out", str(_cert_file())],
-                capture_output=True, text=True, timeout=15,
-            )
-            if cert_proc.returncode != 0:
-                return False, f"Cert extraction failed: {cert_proc.stderr.strip()}"
-
-            key_proc = subprocess.run(
-                ["openssl", "pkcs12",
-                 "-in", str(tmp),
-                 "-nocerts", "-nodes",
-                 "-passin", f"pass:{passphrase}",
-                 "-out", str(_key_file())],
-                capture_output=True, text=True, timeout=15,
-            )
-            if key_proc.returncode != 0:
-                return False, f"Key extraction failed: {key_proc.stderr.strip()}"
-
-            _cert_file().chmod(0o644)
-            _key_file().chmod(0o600)
-            return True, "ok"
-        finally:
-            tmp.unlink(missing_ok=True)
+            cert_pem, key_pem, chain_pem = x509_utils.load_pkcs12_bundle(pfx_data, passphrase or None)
+        except Exception as e:
+            return False, f"Could not parse PKCS#12 bundle (wrong passphrase or corrupt file): {e}"
+        if not key_pem:
+            return False, "PKCS#12 bundle has no private key"
+        _cert_file().write_text(chain_pem or cert_pem)
+        _cert_file().chmod(0o644)
+        _key_file().write_text(key_pem)
+        _key_file().chmod(0o600)
+        return True, "ok"
 
     ok, msg = await asyncio.to_thread(_extract)
     if not ok:
@@ -345,7 +332,9 @@ async def export_bundle(user: AdminUser):
     date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
     filename = f"pktcert-export-{date_str}.tar.gz"
 
-    tmp_out = Path(tempfile.mktemp(suffix=".tar.gz"))
+    _fd, _tmp_name = tempfile.mkstemp(suffix=".tar.gz")
+    os.close(_fd)
+    tmp_out = Path(_tmp_name)
     try:
         await asyncio.to_thread(_build_export_archive, tmp_out)
 
