@@ -38,6 +38,15 @@ output, and are not recoverable afterward (see
    succeeds.
 8. **Create accounts** for your team.
 
+## Finding your way around Settings
+
+Settings has a section bar above its tab bar with two buttons:
+
+- **Common** — General, Security (Users, Auth, Suite Integration, AI Assistant, SSL/TLS), Data (Storage, Backups), Notifications, User Keys, System. Identical across every pkt* app.
+- **pktCert** — Cert Settings, Cert Keys, Templates, Discovery & Alerts. This app's own.
+
+Only the selected section's tabs appear in the row below, so switch sections if a tab isn't where you expect it; they previously shared a single row split by a thin divider. Deep links to a specific tab select the right section automatically.
+
 ## Users & roles
 
 `admin` (full access, including CA/PKI issuance, revocation, secret
@@ -46,6 +55,21 @@ alerts), `viewer` (read-only). Local auth is always available; layer SAML
 SSO on top via Settings if needed. When pktHub proxies a request with a
 valid suite token, its `X-Suite-Role` header maps directly onto these same
 three roles.
+
+### Password policy and login throttling
+
+Local passwords must be **at least 8 characters**, enforced identically
+whether an admin creates a user, edits one, resets a password, or a user
+changes their own.
+
+Five failed logins for the same (client IP, username) pair inside a
+rolling 5-minute window return **429 Too Many Requests** until the window
+clears; one successful login resets the counter. This is a speed bump
+against password spraying and credential stuffing — it's process-local
+and resets when the service restarts, so keep your usual edge protections
+(WAF, fail2ban, network ACLs) in place rather than relying on it alone.
+Note that a user who genuinely forgot their password can lock themselves
+out for a few minutes; that's expected, and waiting clears it.
 
 ## Secret storage & step-up re-auth
 
@@ -122,6 +146,17 @@ inbound Suite Token pktHub uses to proxy in, and the multi-instance list
 of named sibling-app connections (e.g. pktIPAM, for internal-IP context
 on a scanned certificate's host).
 
+Each outbound connection has its own **verify TLS** flag, on by default.
+A suite token grants full access to the target app, so pktCert validates
+the target's certificate before sending it. Turn verification off only
+for a specific internal app that serves a self-signed certificate — and
+prefer issuing that app a certificate from one of your CAs here instead,
+so you can leave verification on. Existing connections upgraded from
+before this flag existed default to verifying; if one of them starts
+failing its health check with a TLS error, that's the reason, and the
+right fix is a valid certificate on the target rather than switching the
+flag off.
+
 ## Lost admin password
 
 There's no password-recovery flow in the UI. If the only admin account is
@@ -151,8 +186,26 @@ through the normal change-password flow once you're in.
 | Frontend shows `{"detail":"Not Found"}` | Frontend wasn't built — `cd frontend && npm install && npm run build`, then restart |
 | A restored `config.yaml` didn't take effect | Restart the service — restoring never does this automatically |
 | `reveal-secret` always returns 401 | Caller is suite-proxied (no local password) — log in as a real local admin |
+| Login returns 429 "Too many failed login attempts" | Five failed attempts for that IP+username in 5 minutes. Wait for the window to clear, or restart the service to reset the counters |
+| Password rejected as too short | Minimum is 8 characters, on every path that sets a password |
+| A sibling-app connection's health check fails with a TLS error | That connection now verifies the target's certificate (default on). Fix the target's certificate, or clear **verify TLS** for just that connection |
+| Uploading an SSL PFX fails with "Could not parse PKCS#12 bundle" | Wrong passphrase or a corrupt/unsupported bundle. The bundle is now parsed in-process rather than shelled out to `openssl`, so the error is the parser's, not a missing binary |
+| AI Assistant says the provider "didn't finish responding within 180s" | The provider was reachable but too slow — typically a large local model on CPU-only hardware. Ask a shorter question, use a smaller model, or give the host more resources |
 
 ## Upgrading
 
 Pull the latest code, rebuild the frontend if you build manually, then
 restart the service. Migrations run automatically on startup.
+
+Migration `005` adds two columns, both additive with safe defaults, so
+no action is needed on upgrade:
+
+- `certificates.key_encrypted` — records whether an issued certificate's
+  exported private key is passphrase-protected. Existing rows default to
+  `0` (not protected), which is accurate: they were issued before the
+  option existed.
+- `integrations.verify_tls` — whether outbound suite calls to that
+  sibling app verify the target's TLS certificate. Existing rows default
+  to `1` (verify). If a sibling app serves a self-signed certificate, its
+  health check will start failing after this upgrade — see
+  [Suite Integration](#suite-integration) above.

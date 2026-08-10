@@ -45,11 +45,20 @@ def generate_private_key(algorithm: str = "rsa", key_size: int = 2048):
     return rsa.generate_private_key(public_exponent=65537, key_size=key_size or 2048)
 
 
-def key_to_pem(key) -> str:
+def key_to_pem(key, passphrase: Optional[str] = None) -> str:
+    """Serialize a private key to PKCS#8 PEM. When a non-empty passphrase is
+    given, the PEM itself is encrypted (BestAvailableEncryption) so that
+    anything installing the key — e.g. a remote web server — must supply that
+    passphrase. pktCert does not store the passphrase; it only hands the
+    encrypted PEM back to the operator."""
+    if passphrase:
+        encryption = serialization.BestAvailableEncryption(passphrase.encode("utf-8"))
+    else:
+        encryption = serialization.NoEncryption()
     return key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
+        encryption_algorithm=encryption,
     ).decode()
 
 

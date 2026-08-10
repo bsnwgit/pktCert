@@ -13,6 +13,17 @@ from app.config import get_settings
 
 settings = get_settings()
 
+MIN_PASSWORD_LENGTH = 8
+
+
+def password_problem(password: str) -> str | None:
+    """Return a human-readable reason the password is unacceptable, or None if
+    it's fine. Single source of truth for the minimum bar across every path
+    that sets a password (create, self-change, admin reset)."""
+    if not password or len(password) < MIN_PASSWORD_LENGTH:
+        return f"Password must be at least {MIN_PASSWORD_LENGTH} characters"
+    return None
+
 
 def hash_password(plain: str) -> str:
     return _bcrypt.hashpw(plain.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
