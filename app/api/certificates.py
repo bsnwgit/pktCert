@@ -337,15 +337,25 @@ class CsrSignRequest(BaseModel):
     template_id: int
 
 
-def _sign_csr_sync(ca_row: dict, template_row: dict, csr_pem: str) -> str:
+def _sign_csr_sync(ca_row: dict, template_row: dict, csr_pem: str, crl_url: str) -> str:
     ca_cert = x509_utils.cert_from_pem(ca_row["cert_pem"])
     ca_key = x509_utils.key_from_pem(decrypt_str(ca_row["private_key_enc"]))
     csr = x509_utils.csr_from_pem(csr_pem)
+
+    # Proof of possession. A CSR is self-signed with the very key it asks us
+    # to certify, so this signature is the only evidence the requester holds
+    # the private key for the public key we're about to bind their name to.
+    # Without the check, anyone could lift someone else's public key into a
+    # CSR and be issued a certificate for it.
+    if not csr.is_signature_valid:
+        raise ValueError("CSR signature is invalid — it was not signed by the key it presents")
+
     cert = x509_utils.sign_certificate(
         csr, ca_cert, ca_key,
         validity_days=template_row["validity_days"],
         key_usage=json.loads(template_row["key_usage_json"]),
         extended_key_usage=json.loads(template_row["extended_key_usage_json"]),
+        crl_url=crl_url,
     )
     return x509_utils.cert_to_pem(cert)
 
@@ -356,13 +366,23 @@ async def sign_csr(body: CsrSignRequest, user: AdminUser, db: aiosqlite.Connecti
         ca_row = await cur.fetchone()
     if not ca_row:
         raise HTTPException(404, "CA not found")
+    if ca_row["status"] != "active":
+        raise HTTPException(400, f"CA is not active (status: {ca_row['status']})")
     async with db.execute("SELECT * FROM cert_templates WHERE id = ?", (body.template_id,)) as cur:
         template_row = await cur.fetchone()
     if not template_row:
         raise HTTPException(404, "Template not found")
 
+    # Same CRL Distribution Point the /issue path stamps on. Without it a
+    # CSR-signed certificate can be revoked here and no relying party can
+    # ever discover that — the revocation would live only in this database.
+    crl_base_url = await _get_crl_base_url(db)
+    crl_url = f"{crl_base_url}/crl/{body.ca_id}.crl"
+
     try:
-        cert_pem = await asyncio.to_thread(_sign_csr_sync, dict(ca_row), dict(template_row), body.csr_pem)
+        cert_pem = await asyncio.to_thread(
+            _sign_csr_sync, dict(ca_row), dict(template_row), body.csr_pem, crl_url
+        )
     except Exception as e:
         raise HTTPException(400, f"Failed to sign CSR: {e}")
     info = x509_utils.parse_certificate(cert_pem)

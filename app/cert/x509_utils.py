@@ -194,11 +194,25 @@ def sign_certificate(
     if eku_oids:
         builder = builder.add_extension(x509.ExtendedKeyUsage(eku_oids), critical=False)
 
+    # Browsers and most modern TLS stacks ignore the CN for hostname matching
+    # and look only at SAN, so a certificate whose CN is absent from its SAN
+    # looks correct in every UI and still fails verification. The /issue path
+    # merges the two before it builds its CSR, but a CSR generated elsewhere
+    # (POST /api/certificates/csr) carries whatever SAN its author put there —
+    # so enforce it here, where every issuance path passes through.
+    san_entries: list = []
     try:
-        san_ext = csr.extensions.get_extension_for_class(x509.SubjectAlternativeName)
-        builder = builder.add_extension(san_ext.value, critical=False)
+        san_entries = list(csr.extensions.get_extension_for_class(x509.SubjectAlternativeName).value)
     except x509.ExtensionNotFound:
         pass
+    existing = {str(getattr(e, "value", e)) for e in san_entries}
+    for attr in csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME):
+        cn = attr.value
+        if isinstance(cn, str) and cn and cn not in existing:
+            san_entries.extend(_san_list([cn]))
+            existing.add(cn)
+    if san_entries:
+        builder = builder.add_extension(x509.SubjectAlternativeName(san_entries), critical=False)
 
     builder = builder.add_extension(
         x509.SubjectKeyIdentifier.from_public_key(csr.public_key()), critical=False
@@ -243,6 +257,10 @@ def build_crl(ca_cert: x509.Certificate, ca_key, revoked: list[dict], crl_number
         builder = builder.add_revoked_certificate(revoked_cert)
     crl = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
     return crl.public_bytes(serialization.Encoding.PEM).decode()
+
+
+def crl_from_pem(pem: str) -> x509.CertificateRevocationList:
+    return x509.load_pem_x509_crl(pem.encode())
 
 
 def _name_to_str(name: x509.Name) -> str:

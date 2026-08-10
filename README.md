@@ -346,6 +346,18 @@ PKTCERT_CONFIG=./config.yaml uvicorn app.main:app --reload --port 8763
 Run the frontend dev server separately with `npm run dev` inside
 `frontend/` (proxy `/api` to the backend port in `vite.config.ts`).
 
+### Tests
+
+PKI correctness regression checks — CRL Distribution Points on every
+issuance path, CSR proof-of-possession, CN-in-SAN, and RFC 5280 CRL
+numbering — run against the real routes in a throwaway temp database:
+
+```bash
+python3 tests/test_pki_correctness.py
+```
+
+No test framework needed; it uses only what `requirements.txt` installs.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
