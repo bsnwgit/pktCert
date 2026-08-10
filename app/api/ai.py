@@ -51,6 +51,11 @@ SCOPE LOCK (non-negotiable):
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
+# Local models can take a long time on complex/multi-part questions — cloud
+# providers rarely need anywhere near this, but a short timeout here just
+# means local users hit spurious failures on harder questions.
+PROVIDER_TIMEOUT_SECONDS = 180
+
 # Other apps in the pktApp suite — mentions of these are out of pktCert's scope.
 _OTHER_APPS = ["pktsnmp", "pktflow", "pktlog", "pkthub", "pktwifi", "pktnode", "pktpcap", "pktsecurity"]
 
@@ -191,7 +196,7 @@ async def _call_ollama(provider: dict, user_message: str) -> tuple[str, int]:
             {"role": "user", "content": user_message},
         ],
     }
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUT_SECONDS) as client:
         resp = await client.post(url, json=payload)
     resp.raise_for_status()
     data = resp.json()
@@ -212,7 +217,7 @@ async def _call_openai_compatible(provider: dict, user_message: str) -> tuple[st
             {"role": "user", "content": user_message},
         ],
     }
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUT_SECONDS) as client:
         resp = await client.post(url, json=payload, headers=headers)
     resp.raise_for_status()
     data = resp.json()
@@ -262,6 +267,6 @@ async def chat(
         if isinstance(e, httpx.ConnectError):
             raise HTTPException(status_code=502, detail=f"Could not reach {provider['name']} at {provider.get('base_url', 'its configured URL')}. Check it's running and the Base URL is correct.")
         if isinstance(e, httpx.TimeoutException):
-            raise HTTPException(status_code=502, detail=f"{provider['name']} timed out. Check it's responsive at {provider.get('base_url', 'its configured URL')}.")
+            raise HTTPException(status_code=502, detail=f"{provider['name']} didn't finish responding within {PROVIDER_TIMEOUT_SECONDS}s. Local models can take a while on complex or multi-part questions — try a shorter question, or wait a moment and try again.")
         detail_msg = str(e) or f"{type(e).__name__} (no further detail from provider)"
         raise HTTPException(status_code=502, detail=f"{provider['name']} error: {detail_msg[:200]}")
