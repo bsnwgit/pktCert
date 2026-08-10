@@ -1544,8 +1544,8 @@ export default function Settings() {
     'okta_saml_enabled', 'okta_saml_idp_entity_id', 'okta_saml_idp_sso_url',
     'okta_saml_idp_cert', 'okta_saml_sp_entity_id', 'okta_saml_sp_cert', 'okta_saml_sp_key',
   ], settings, load)
-  const crlSave = useSave(['crl_base_url'], settings, load)
-  const backupSave = useSave(['backup_enabled', 'backup_interval_hours', 'backup_rotation_count', 'backup_path'], settings, load)
+  const crlSave = useSave(['crl_base_url', 'require_issuance_approval', 'require_revocation_approval'], settings, load)
+  const backupSave = useSave(['backup_enabled', 'backup_interval_hours', 'backup_rotation_count', 'backup_path', 'backup_include_config'], settings, load)
   const storageSave = useSave(['alert_event_retention_days'], settings, load)
   const lucidSave = useSave(['lucid_api_token'], settings, load)
   const discoverySave = useSave([
@@ -2057,6 +2057,10 @@ export default function Settings() {
           <Field label="Backup path" hint="Directory on server where snapshots are stored">
             <TextInput value={str('backup_path')} onChange={v => set('backup_path', v)} mono placeholder="<install_dir>/backups" />
           </Field>
+          <Field label="Include config.yaml in snapshots"
+            hint="Off by default — it holds the key that decrypts every secret in the database">
+            <Toggle value={bool('backup_include_config')} onChange={v => set('backup_include_config', v)} />
+          </Field>
           <Field label="Manual backup" hint="Trigger a backup run immediately using current settings">
             <div className="space-y-3">
               <div className="flex items-center gap-3 flex-wrap">
@@ -2386,11 +2390,19 @@ export default function Settings() {
             content: <>
               <p><span className="text-gray-300 font-medium">CRL Base URL</span> feeds the CRL Distribution Point baked into every certificate issued from now on. Keep it plain <span className="text-gray-300 font-medium">http://</span>, not https:// — standard PKI practice, since checking revocation over HTTPS creates a circular trust dependency (validating the CRL fetch's own cert would itself require a revocation check), and the CRL is already self-verifying via the issuing CA's signature.</p>
               <p>This is baked into each certificate at the moment it's issued, not looked up live — set it correctly <span className="text-gray-300 font-medium">before</span> issuing certs you want revocation-checkable. Changing it later has no effect on certs already issued; they keep pointing at whatever URL was set when they were signed.</p>
+              <p><span className="text-gray-300 font-medium">Require approval</span> turns on separation of duties: issuing or revoking records a request on the Approvals page instead of acting, and a <span className="text-gray-300 font-medium">different</span> admin has to approve it. Nobody can approve their own request — so an install with only one admin account cannot approve anything, and should leave this off.</p>
+              <p>Both toggles are <span className="text-gray-300 font-medium">off by default</span>. A small team where everyone is trusted equally gains nothing from an approval step and pays for it on every issuance. Turning them off again takes effect immediately; anything already pending stays on the Approvals page until it's actioned or withdrawn.</p>
             </>,
           }}
         >
           <Field label="CRL Base URL" hint="Used for the CRL link baked into issued certs — keep this http://, not https://">
             <TextInput value={str('crl_base_url')} onChange={v => set('crl_base_url', v)} placeholder="http://SERVER-IP:8763" />
+          </Field>
+          <Field label="Require approval to issue" hint="A second admin must approve before a certificate is issued">
+            <Toggle value={bool('require_issuance_approval')} onChange={v => set('require_issuance_approval', v)} />
+          </Field>
+          <Field label="Require approval to revoke" hint="A second admin must approve before a certificate is revoked">
+            <Toggle value={bool('require_revocation_approval')} onChange={v => set('require_revocation_approval', v)} />
           </Field>
         </Section>
       )}

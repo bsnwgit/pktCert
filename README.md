@@ -371,6 +371,14 @@ python3 tests/test_chain_and_constraints.py
 python3 tests/test_ca_lifecycle.py
 ```
 
+```bash
+python3 tests/test_approvals.py
+```
+
+```bash
+python3 tests/test_export_stepup.py
+```
+
 - **test_pki_correctness** — CRL Distribution Points on every issuance path,
   CSR proof-of-possession, CN-in-SAN, RFC 5280 CRL numbering
 - **test_alert_notifications** — real delivery to a live HTTP receiver,
@@ -381,6 +389,9 @@ python3 tests/test_ca_lifecycle.py
   constraints, RFC 5280 revocation reason codes
 - **test_ca_lifecycle** — CA import validation (key/cert pairing, CA-ness,
   encrypted keys) and disable-rather-than-delete retirement
+- **test_approvals** — separation of duties: off-by-default behaviour, the
+  two-person rule, and that approval is what performs the operation
+- **test_export_stepup** — password re-entry before the backup bundle downloads
 
 ## Contributing
 
@@ -388,13 +399,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Known Gaps / Fast-Follow Work
 
-- No ACME protocol server (RFC 8555) — issuance is UI/API-driven only, and
-  there is no SCEP or EST enrollment for network devices.
+- No ACME protocol server (RFC 8555) — issuance is UI/API-driven only.
 - No OCSP responder — revocation status is only available via CRL.
 - CA private keys are encrypted at rest with a key in `config.yaml` on the
   same host; no PKCS#11/HSM support and no offline-root workflow.
-- One admin role issues, revokes, and reveals keys — no separation of duties
-  and no issuance approval workflow.
+- No hardware-backed key storage; see PKCS#11/HSM below.
 - The audit trail (`cert_events`) is ordinary mutable rows, not tamper-evident,
   and has no SIEM/syslog export.
 - Templates enforce no policy ceiling — no maximum validity, no allowed-domain

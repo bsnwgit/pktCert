@@ -40,6 +40,7 @@ from app.api import (
     docs as docs_router,
     crl as crl_router,
     aia as aia_router,
+    approvals as approvals_router,
 )
 
 settings = get_settings()
@@ -169,6 +170,7 @@ app.include_router(integrations_router.router, prefix="/api/integrations", tags=
 app.include_router(ai_router.router,        prefix="/api/ai",           tags=["ai"])
 app.include_router(widgets_router.router,   prefix="/api/widgets",      tags=["widgets"])
 app.include_router(docs_router.router,      prefix="/api/docs-content", tags=["docs"])
+app.include_router(approvals_router.router, prefix="/api/approvals",   tags=["approvals"])
 # Deliberately outside /api and unauthenticated — see app/api/crl.py's
 # module docstring for why. Registered before the SPA catch-all below so
 # it takes priority over that route's broader "/{full_path:path}" pattern.

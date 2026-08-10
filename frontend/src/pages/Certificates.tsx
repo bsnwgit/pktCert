@@ -62,6 +62,8 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [issued, setIssued] = useState<Certificate | null>(null)
+  const [approvalPending, setApprovalPending] = useState<string | null>(null)
+  const [justification, setJustification] = useState('')
   const [pending, setPending] = useState<PendingAction | null>(null)
 
   const submit = async () => {
@@ -77,7 +79,15 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
       const cert = await api.issueCertificate({
         common_name: commonName.trim(), sans: sanList, ca_id: Number(caId), template_id: Number(templateId),
         ...(protectKey && keyPassphrase ? { key_passphrase: keyPassphrase } : {}),
+        ...(justification.trim() ? { justification: justification.trim() } : {}),
       })
+      if (cert.pending_approval) {
+        // Separation of duties is on: nothing was issued, and there is no key
+        // to show. The certificate is created when a second admin approves.
+        setApprovalPending(cert.detail ?? 'Submitted for approval.')
+        onIssued()
+        return
+      }
       setIssued(cert)
       onIssued()
     } catch (e: any) {
@@ -92,7 +102,20 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 py-8 px-4" onClick={onClose}>
       <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-lg w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        {!issued ? (
+        {approvalPending ? (
+          <>
+            <h3 className="text-lg font-semibold text-white mb-2">Awaiting approval</h3>
+            <p className="text-sm text-white mb-4">{approvalPending}</p>
+            <p className="text-xs text-white/70 mb-4">
+              No certificate and no private key exist yet — both are created at the moment another admin
+              approves. Track it on the Approvals page.
+            </p>
+            <button onClick={onClose}
+              className="w-full px-4 py-2 text-sm border border-gray-700 hover:border-gray-500 text-white rounded-lg transition-colors">
+              Close
+            </button>
+          </>
+        ) : !issued ? (
           <>
             <h3 className="text-lg font-semibold text-white mb-4">Issue Certificate</h3>
             <div className="space-y-4">
@@ -143,6 +166,11 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
                     </p>
                   </div>
                 )}
+              </div>
+              <div>
+                <label className="block text-xs text-white mb-1">Justification (optional)</label>
+                <input value={justification} onChange={e => setJustification(e.target.value)}
+                  placeholder="Shown to whoever approves this, if approval is required" className={inp} />
               </div>
               {error && <p className="text-sm text-red-400">{error}</p>}
               <div className="flex items-center gap-3 pt-1">
@@ -297,8 +325,11 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
     if (!confirm(`Revoke certificate '${cert.common_name}'? This cannot be undone.`)) return
     setRevoking(true)
     try {
-      await api.revokeCertificate(cert.id, reason, reasonCode)
+      const res = await api.revokeCertificate(cert.id, reason, reasonCode)
       onChanged()
+      if (res?.pending_approval) {
+        alert(res.detail ?? 'Revocation submitted for approval — the certificate is still valid until approved.')
+      }
       onClose()
     } finally {
       setRevoking(false)

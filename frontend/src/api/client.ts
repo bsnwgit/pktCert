@@ -138,8 +138,10 @@ export const api = {
     request<{ pem: string }>(`/certificates/${id}/download`, {
       method: 'POST', body: JSON.stringify({ fmt, password }),
     }),
-  issueCertificate: (body: { common_name: string; sans: string[]; ca_id: number; template_id: number; key_passphrase?: string; auto_renew?: boolean; auto_renew_days?: number }) =>
-    request<Certificate & { private_key_pem?: string }>('/certificates/issue', { method: 'POST', body: JSON.stringify(body) }),
+  // Returns a certificate normally, or {pending_approval, request_id} when
+  // separation of duties is enabled — the issuance then happens on approval.
+  issueCertificate: (body: { common_name: string; sans: string[]; ca_id: number; template_id: number; key_passphrase?: string; auto_renew?: boolean; auto_renew_days?: number; justification?: string }) =>
+    request<Certificate & { private_key_pem?: string; pending_approval?: boolean; request_id?: number; detail?: string }>('/certificates/issue', { method: 'POST', body: JSON.stringify(body) }),
   signCsr: (body: { csr_pem: string; ca_id: number; template_id: number }) =>
     request<Certificate>('/certificates/csr', { method: 'POST', body: JSON.stringify(body) }),
   renewCertificate: (id: number, body: { key_passphrase?: string } = {}) =>
@@ -149,7 +151,7 @@ export const api = {
       method: 'PATCH', body: JSON.stringify({ auto_renew, auto_renew_days }),
     }),
   revokeCertificate: (id: number, reason: string, reason_code = 'unspecified') =>
-    request<{ status: string; reason_code: string }>(`/certificates/${id}/revoke`, {
+    request<{ status?: string; reason_code?: string; pending_approval?: boolean; request_id?: number; detail?: string }>(`/certificates/${id}/revoke`, {
       method: 'POST', body: JSON.stringify({ reason, reason_code }),
     }),
   // Step-up re-auth: current password required to decrypt a stored private
@@ -192,6 +194,18 @@ export const api = {
   deleteCa: (id: number) => request(`/cas/${id}`, { method: 'DELETE' }),
   getCrl: (id: number) =>
     request<{ crl_pem: string; crl_number: number; this_update: string; next_update: string }>(`/cas/${id}/crl`),
+
+  // -- Approvals (separation of duties; disabled by default) ------------------------
+  getApprovalConfig: () =>
+    request<{ issuance_approval_required: boolean; revocation_approval_required: boolean; admin_count: number; pending_count: number }>('/approvals/config'),
+  getApprovals: (params?: { status?: string; limit?: number }) =>
+    request<CertRequest[]>(`/approvals${toQueryString(params)}`),
+  approveRequest: (id: number, note = '') =>
+    request<CertRequest & { certificate_id?: number }>(`/approvals/${id}/approve`, { method: 'POST', body: JSON.stringify({ note }) }),
+  rejectRequest: (id: number, note = '') =>
+    request<CertRequest>(`/approvals/${id}/reject`, { method: 'POST', body: JSON.stringify({ note }) }),
+  cancelRequest: (id: number) =>
+    request<CertRequest>(`/approvals/${id}/cancel`, { method: 'POST' }),
 
   // -- Templates ---------------------------------------------------------------------
   getTemplates: () => request<CertTemplate[]>('/templates'),
@@ -489,6 +503,29 @@ export interface Certificate {
   auto_renew: boolean
   auto_renew_days: number
   private_key_pem?: string
+}
+
+export interface CertRequest {
+  id: number
+  request_type: 'issue' | 'revoke'
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled'
+  common_name: string | null
+  sans: string[]
+  ca_id: number | null
+  template_id: number | null
+  auto_renew: boolean
+  auto_renew_days: number
+  certificate_id: number | null
+  reason: string | null
+  reason_code: string | null
+  requested_by: string
+  requested_by_id: number | null
+  justification: string | null
+  requested_at: string
+  decided_by: string | null
+  decided_at: string | null
+  decision_note: string | null
+  resulting_certificate_id: number | null
 }
 
 export type CaType = 'root' | 'intermediate'
