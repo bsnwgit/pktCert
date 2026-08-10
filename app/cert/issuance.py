@@ -31,6 +31,29 @@ from app.cert.crypto import decrypt_str, encrypt_str
 _DEFAULT_CRL_BASE = "http://localhost:8763"
 
 
+def signing_refusal(ca_row) -> str | None:
+    """Why this CA cannot sign, or None if it can.
+
+    Two states make a CA unusable for signing regardless of its status:
+    an offline CA (pktCert deliberately holds no key for it) and an
+    intermediate still waiting for its CSR to come back signed. Both would
+    otherwise fail deep inside a signing call with an opaque error about an
+    unparseable key.
+    """
+    keys = ca_row.keys() if hasattr(ca_row, "keys") else ca_row
+    if "key_storage" in keys and ca_row["key_storage"] == "offline":
+        return (
+            f"'{ca_row['name']}' is an offline CA — pktCert holds no private key for it, "
+            "by design. Issue from an intermediate signed by it instead."
+        )
+    if ca_row["status"] == "pending_signature":
+        return (
+            f"'{ca_row['name']}' is still awaiting its signed certificate. Download its CSR, "
+            "have the parent CA sign it, and import the result before issuing from it."
+        )
+    return None
+
+
 async def get_crl_base_url(db: aiosqlite.Connection) -> str:
     """Deliberately a separate setting from SAML's 'base_url' (app/auth/saml.py)
     even though both describe "this app's externally-reachable address" — SAML

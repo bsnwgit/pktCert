@@ -37,6 +37,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
+from cryptography import x509
 
 from app.cert import x509_utils
 from app.cert.crypto import decrypt_str
@@ -47,6 +48,12 @@ from app.cert.crypto import decrypt_str
 # open) on every certificate the CA ever issued. x509_utils.build_crl sets
 # nextUpdate 7 days out, so an idle CA re-issues roughly every 6 days.
 _REFRESH_MARGIN = timedelta(days=1)
+
+
+class OfflineCrlUnavailable(Exception):
+    """Raised when a CRL is requested for an offline CA and none has been
+    uploaded. Callers turn this into a clear HTTP error rather than a 500 —
+    it's a configuration state, not a fault."""
 
 
 def _parse_utc_ts(value: str | None) -> datetime:
@@ -115,6 +122,32 @@ async def get_published_crl(db: aiosqlite.Connection, ca_row) -> dict:
     where `issued` says whether this call minted a new CRL.
     """
     ca_id = ca_row["id"]
+
+    # An offline CA holds no private key here, so pktCert cannot sign a CRL
+    # for it — that's the point of keeping the key offline, not a limitation
+    # to work around. What it can do is publish a CRL that was signed on the
+    # offline machine and uploaded (POST /api/cas/{id}/upload-crl).
+    if "key_storage" in ca_row.keys() and ca_row["key_storage"] == "offline":
+        uploaded = ca_row["uploaded_crl_pem"] if "uploaded_crl_pem" in ca_row.keys() else None
+        if not uploaded:
+            raise OfflineCrlUnavailable(
+                f"CA '{ca_row['name']}' is offline — pktCert holds no key to sign its CRL. "
+                "Sign the CRL on the machine holding the key and upload it "
+                "(POST /api/cas/{id}/upload-crl)."
+            )
+        crl = x509_utils.crl_from_pem(uploaded)
+        try:
+            number = crl.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
+        except x509.ExtensionNotFound:
+            number = 0
+        return {
+            "crl_pem": uploaded,
+            "crl_number": number,
+            "this_update": crl.last_update_utc.isoformat(),
+            "next_update": crl.next_update_utc.isoformat() if crl.next_update_utc else "",
+            "issued": False,
+        }
+
     revoked = await _fetch_revoked(db, ca_id)
     fp = revoked_fingerprint(revoked)
     now = datetime.now(timezone.utc)

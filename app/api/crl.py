@@ -43,7 +43,14 @@ async def get_public_crl(ca_id: int, db: aiosqlite.Connection = Depends(get_db))
     if not ca_row:
         raise HTTPException(404, "CA not found")
 
-    published = await crl_manager.get_published_crl(db, ca_row)
+    try:
+        published = await crl_manager.get_published_crl(db, ca_row)
+    except crl_manager.OfflineCrlUnavailable:
+        # An offline CA whose CRL hasn't been uploaded yet. 404 rather than a
+        # 500: to a relying party this is simply "no CRL published here", and
+        # the operator-facing explanation belongs in the admin route, not in a
+        # response to an anonymous fetch.
+        raise HTTPException(404, "No CRL published for this CA")
 
     cached = _der_cache.get(ca_id)
     if cached and cached["crl_number"] == published["crl_number"]:

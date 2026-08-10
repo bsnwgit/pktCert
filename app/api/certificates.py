@@ -266,6 +266,9 @@ async def issue_certificate(body: IssueRequest, user: AdminUser, db: aiosqlite.C
         raise HTTPException(404, "CA not found")
     if ca_row["status"] != "active":
         raise HTTPException(400, f"CA is not active (status: {ca_row['status']})")
+    refusal = issuance.signing_refusal(ca_row)
+    if refusal:
+        raise HTTPException(400, refusal)
 
     async with db.execute("SELECT * FROM cert_templates WHERE id = ?", (body.template_id,)) as cur:
         template_row = await cur.fetchone()
@@ -350,6 +353,9 @@ async def sign_csr(body: CsrSignRequest, user: AdminUser, db: aiosqlite.Connecti
         raise HTTPException(404, "CA not found")
     if ca_row["status"] != "active":
         raise HTTPException(400, f"CA is not active (status: {ca_row['status']})")
+    refusal = issuance.signing_refusal(ca_row)
+    if refusal:
+        raise HTTPException(400, refusal)
     async with db.execute("SELECT * FROM cert_templates WHERE id = ?", (body.template_id,)) as cur:
         template_row = await cur.fetchone()
     if not template_row:
@@ -431,6 +437,9 @@ async def renew_certificate(
         raise HTTPException(404, "Issuing CA no longer exists")
     if ca_row["status"] != "active":
         raise HTTPException(400, f"Issuing CA is not active (status: {ca_row['status']})")
+    refusal = issuance.signing_refusal(ca_row)
+    if refusal:
+        raise HTTPException(400, refusal)
 
     async with db.execute("SELECT * FROM cert_templates WHERE id = ?", (old["template_id"],)) as cur:
         template_row = await cur.fetchone()

@@ -56,6 +56,7 @@ async def _due_for_renewal(db: aiosqlite.Connection) -> list[aiosqlite.Row]:
              AND c.status NOT IN ('superseded', 'revoked')
              AND c.renewed_to_id IS NULL
              AND ca.status = 'active'
+             AND ca.key_storage = 'local'
              AND c.not_after IS NOT NULL
              AND c.not_after < datetime('now', '+' || c.auto_renew_days || ' days')"""
     ) as cur:
