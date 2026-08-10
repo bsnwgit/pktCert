@@ -118,6 +118,46 @@ verification at connection time.
 issuance path, so this holds whether pktCert generated the CSR or the
 requester supplied their own.
 
+## Renewal
+
+`POST /api/certificates/{id}/renew` issues a replacement carrying the same
+subject and SANs, from the same CA and template, and links the two
+generations together (`renewed_from_id` / `renewed_to_id`).
+
+Renewal always generates a **fresh keypair**. Re-certifying the same public
+key would carry any compromise of the old key straight into the new
+certificate, and pktCert has no way to know how widely that key has been
+copied since it was issued.
+
+The previous certificate is marked **`superseded`**, not revoked. It is
+still deployed and still trusted by everything that has it, and revoking it
+at the moment of renewal would break the running service instantly —
+before anyone has installed the replacement. A superseded certificate stays
+in the inventory but stops raising expiry alerts, because the thing those
+alerts would be asking for already exists. Revoke it yourself once the new
+one is in place.
+
+Only certificates pktCert issued can be renewed. A discovered or
+externally-issued certificate has to be replaced at whatever CA issued it.
+
+### Automatic renewal
+
+`PATCH /api/certificates/{id}/auto-renew` opts a single certificate in, with
+its own window (`auto_renew_days`, default 30). `app/cert/renewal.py` checks
+every 10 minutes and renews anything inside its window, through the same
+issuance path as a manual renewal — an auto-renewed certificate is
+indistinguishable from a hand-issued one.
+
+Auto-renewal does **not** install anything. The new certificate and its key
+are stored in pktCert; getting them onto the server that serves them is
+still a human step. That's precisely why it's opt-in per certificate rather
+than a global default: it removes the "nobody noticed it was expiring"
+failure, not the deployment step.
+
+An auto-renewal gets no key passphrase — there is nobody at a keyboard to
+supply or receive one. The key is still Fernet-encrypted at rest like every
+other stored key, and retrievable through the usual step-up re-auth.
+
 ## Revocation & CRLs
 
 `POST /api/certificates/{id}/revoke` marks a certificate `revoked`
@@ -214,9 +254,11 @@ work.
 `app/cert/alert_engine.py`'s `_refresh_statuses()` runs every tick
 alongside alert evaluation:
 
-- `not_after < now` → `expired` (unless already `revoked`)
+- `not_after < now` → `expired` (unless already `revoked` or `superseded`)
 - `not_after < now + 30 days` → `expiring`
 - otherwise → `valid`
 
-`revoked` is set only by an explicit revoke call and is never overwritten
-by this automatic refresh.
+`revoked` is set only by an explicit revoke call, and `superseded` only by
+renewal. Neither is ever overwritten by this automatic refresh, and neither
+raises expiry alerts — a revoked certificate is already dead, and a
+superseded one has already been replaced.

@@ -348,15 +348,27 @@ Run the frontend dev server separately with `npm run dev` inside
 
 ### Tests
 
-PKI correctness regression checks — CRL Distribution Points on every
-issuance path, CSR proof-of-possession, CN-in-SAN, and RFC 5280 CRL
-numbering — run against the real routes in a throwaway temp database:
+Each suite runs against the real routes in a throwaway temp database. No test
+framework needed; they use only what `requirements.txt` installs.
 
 ```bash
 python3 tests/test_pki_correctness.py
 ```
 
-No test framework needed; it uses only what `requirements.txt` installs.
+```bash
+python3 tests/test_alert_notifications.py
+```
+
+```bash
+python3 tests/test_renewal.py
+```
+
+- **test_pki_correctness** — CRL Distribution Points on every issuance path,
+  CSR proof-of-possession, CN-in-SAN, RFC 5280 CRL numbering
+- **test_alert_notifications** — real delivery to a live HTTP receiver,
+  delivery logging, no re-notification while an event stays open
+- **test_renewal** — subject/SAN preservation, fresh keys, supersede-not-revoke,
+  and the auto-renewal window
 
 ## Contributing
 
