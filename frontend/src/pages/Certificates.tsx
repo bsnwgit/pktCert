@@ -78,6 +78,7 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
               <div>
                 <label className="block text-xs text-white mb-1">Subject Alternative Names (comma-separated)</label>
                 <input value={sans} onChange={e => setSans(e.target.value)} placeholder="alt1.example.com, 10.0.0.5" className={inp} />
+                <p className="text-xs text-slate-400 mt-1">Common Name is added automatically — browsers ignore CN for hostname matching, so list every other hostname/IP the cert must be valid for here.</p>
               </div>
               <div>
                 <label className="block text-xs text-white mb-1">Certificate Authority</label>

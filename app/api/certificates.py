@@ -267,8 +267,12 @@ async def issue_certificate(body: IssueRequest, user: AdminUser, db: aiosqlite.C
     if not template_row:
         raise HTTPException(404, "Template not found")
 
+    # Browsers ignore the CN for hostname matching and only check SAN, so the
+    # common name must always be present in SAN too or the issued cert will
+    # look valid (right issuer, right CN) but fail hostname verification.
+    sans = list(dict.fromkeys([body.common_name, *body.sans]))
     cert_pem, key_pem = await asyncio.to_thread(
-        _issue_sync, dict(ca_row), dict(template_row), body.common_name, body.sans or [body.common_name]
+        _issue_sync, dict(ca_row), dict(template_row), body.common_name, sans
     )
     info = x509_utils.parse_certificate(cert_pem)
 
