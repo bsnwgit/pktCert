@@ -80,7 +80,7 @@ class AlertEngine:
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 """UPDATE certificates SET status = 'expired'
-                   WHERE status NOT IN ('revoked', 'expired') AND not_after IS NOT NULL
+                   WHERE status NOT IN ('revoked', 'expired', 'superseded') AND not_after IS NOT NULL
                      AND not_after < datetime('now')"""
             )
             await db.execute(
@@ -200,7 +200,7 @@ async def _check_cert_expiring(db: aiosqlite.Connection, rule) -> None:
     threshold_days = int(rule["threshold"] or 30)
     async with db.execute(
         """SELECT id, common_name, not_after FROM certificates
-           WHERE status NOT IN ('revoked', 'expired')
+           WHERE status NOT IN ('revoked', 'expired', 'superseded')
              AND not_after IS NOT NULL
              AND not_after < datetime('now', ?)
              AND not_after >= datetime('now')""",
@@ -218,7 +218,8 @@ async def _check_cert_expiring(db: aiosqlite.Connection, rule) -> None:
 async def _check_cert_expired(db: aiosqlite.Connection, rule) -> None:
     async with db.execute(
         """SELECT id, common_name, not_after FROM certificates
-           WHERE status = 'expired' OR (not_after IS NOT NULL AND not_after < datetime('now'))"""
+           WHERE status != 'superseded'
+             AND (status = 'expired' OR (not_after IS NOT NULL AND not_after < datetime('now')))"""
     ) as cur:
         rows = await cur.fetchall()
     bad_ids = set()

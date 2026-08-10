@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from app.auth.local import verify_password
 from app.database import get_db
 from app.dependencies import AdminUser, CurrentUser
-from app.cert import x509_utils
+from app.cert import issuance, x509_utils
 from app.cert.crypto import decrypt_str, encrypt_str
 
 router = APIRouter()
@@ -47,6 +47,12 @@ def _cert_out(r) -> dict:
         "key_encrypted": bool(r["key_encrypted"]) if "key_encrypted" in r.keys() else False,
         "first_seen_at": r["first_seen_at"], "last_seen_at": r["last_seen_at"],
         "revoked_at": r["revoked_at"], "revoked_reason": r["revoked_reason"], "created_at": r["created_at"],
+        # Renewal chain (migration 008). Guarded with a key check so this keeps
+        # working against a row read before the migration applied.
+        "renewed_from_id": r["renewed_from_id"] if "renewed_from_id" in r.keys() else None,
+        "renewed_to_id": r["renewed_to_id"] if "renewed_to_id" in r.keys() else None,
+        "auto_renew": bool(r["auto_renew"]) if "auto_renew" in r.keys() else False,
+        "auto_renew_days": r["auto_renew_days"] if "auto_renew_days" in r.keys() else 30,
     }
 
 
@@ -242,43 +248,8 @@ class IssueRequest(BaseModel):
     # returned/stored key PEM is encrypted with it, so installing the key on a
     # remote server requires entering this secret. Not stored by pktCert.
     key_passphrase: str = ""
-
-
-def _issue_sync(
-    ca_row: dict, template_row: dict, common_name: str, sans: list[str],
-    crl_url: str, key_passphrase: str = "",
-) -> tuple:
-    ca_cert = x509_utils.cert_from_pem(ca_row["cert_pem"])
-    ca_key = x509_utils.key_from_pem(decrypt_str(ca_row["private_key_enc"]))
-    leaf_key = x509_utils.generate_private_key(template_row["key_algorithm"], template_row["key_size"])
-    csr = x509_utils.generate_csr(common_name, sans, leaf_key)
-    cert = x509_utils.sign_certificate(
-        csr, ca_cert, ca_key,
-        validity_days=template_row["validity_days"],
-        key_usage=json.loads(template_row["key_usage_json"]),
-        extended_key_usage=json.loads(template_row["extended_key_usage_json"]),
-        crl_url=crl_url,
-    )
-    return x509_utils.cert_to_pem(cert), x509_utils.key_to_pem(leaf_key, key_passphrase or None)
-
-
-async def _get_crl_base_url(db: aiosqlite.Connection) -> str:
-    """Deliberately a separate setting from SAML's 'base_url' (app/auth/saml.py)
-    even though both are "this app's externally-reachable address" — SAML
-    wants https:// when SSO is configured, but a CRL Distribution Point
-    should stay plain http:// (standard PKI practice: checking revocation
-    over HTTPS creates a circular trust dependency, and the CRL is already
-    self-verifying via the CA's own signature). Falls back to localhost,
-    which only works for same-host testing; an admin must set 'crl_base_url'
-    in Settings for CRL checking to work from any other device."""
-    async with db.execute("SELECT value FROM settings WHERE key = 'crl_base_url'") as cur:
-        row = await cur.fetchone()
-    if not row or not row[0]:
-        return "http://localhost:8763"
-    try:
-        return str(json.loads(row[0])).rstrip("/") or "http://localhost:8763"
-    except (ValueError, TypeError):
-        return str(row[0]).rstrip("/")
+    auto_renew: bool = False
+    auto_renew_days: int = 30
 
 
 @router.post("/issue", status_code=201)
@@ -295,30 +266,11 @@ async def issue_certificate(body: IssueRequest, user: AdminUser, db: aiosqlite.C
     if not template_row:
         raise HTTPException(404, "Template not found")
 
-    # Browsers ignore the CN for hostname matching and only check SAN, so the
-    # common name must always be present in SAN too or the issued cert will
-    # look valid (right issuer, right CN) but fail hostname verification.
-    sans = list(dict.fromkeys([body.common_name, *body.sans]))
-    crl_base_url = await _get_crl_base_url(db)
-    crl_url = f"{crl_base_url}/crl/{body.ca_id}.crl"
-    key_passphrase = body.key_passphrase or ""
-    cert_pem, key_pem = await asyncio.to_thread(
-        _issue_sync, dict(ca_row), dict(template_row), body.common_name, sans, crl_url, key_passphrase
+    row, key_pem = await issuance.issue_certificate(
+        db, ca_row, template_row, body.common_name, body.sans,
+        key_passphrase=body.key_passphrase or "",
+        auto_renew=body.auto_renew, auto_renew_days=body.auto_renew_days,
     )
-    info = x509_utils.parse_certificate(cert_pem)
-
-    cur = await db.execute(
-        """INSERT INTO certificates
-           (common_name, san_json, issuer, subject, serial_number, fingerprint_sha256,
-            not_before, not_after, key_algorithm, key_size, signature_algorithm,
-            status, source, cert_pem, private_key_enc, key_encrypted, ca_id, template_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'issued', ?, ?, ?, ?, ?) RETURNING *""",
-        (info["common_name"], json.dumps(info["san"]), info["issuer"], info["subject"],
-         info["serial_number"], info["fingerprint_sha256"], info["not_before"], info["not_after"],
-         info["key_algorithm"], info["key_size"], info["signature_algorithm"],
-         cert_pem, encrypt_str(key_pem), int(bool(key_passphrase)), body.ca_id, body.template_id),
-    )
-    row = await cur.fetchone()
     await db.execute(
         "INSERT INTO cert_events (certificate_id, ca_id, event_type, message) VALUES (?, ?, 'issued', ?)",
         (row["id"], body.ca_id, f"Issued for '{body.common_name}' by CA '{ca_row['name']}'"),
@@ -376,7 +328,7 @@ async def sign_csr(body: CsrSignRequest, user: AdminUser, db: aiosqlite.Connecti
     # Same CRL Distribution Point the /issue path stamps on. Without it a
     # CSR-signed certificate can be revoked here and no relying party can
     # ever discover that — the revocation would live only in this database.
-    crl_base_url = await _get_crl_base_url(db)
+    crl_base_url = await issuance.get_crl_base_url(db)
     crl_url = f"{crl_base_url}/crl/{body.ca_id}.crl"
 
     try:
@@ -405,6 +357,110 @@ async def sign_csr(body: CsrSignRequest, user: AdminUser, db: aiosqlite.Connecti
     )
     await db.commit()
     return _cert_out(row)
+
+
+class RenewRequest(BaseModel):
+    # Renewal always generates a fresh keypair. Re-certifying the same public
+    # key would carry any compromise of the old key straight into the new
+    # certificate, and pktCert has no way to know whether that key has been
+    # copied around servers in the meantime.
+    key_passphrase: str = ""
+    auto_renew: bool | None = None      # None = inherit the previous cert's setting
+    auto_renew_days: int | None = None
+
+
+@router.post("/{cert_id}/renew", status_code=201)
+async def renew_certificate(
+    cert_id: int, body: RenewRequest, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)
+):
+    """Replace a certificate with a freshly issued one carrying the same
+    subject and SANs, from the same CA and template.
+
+    The old certificate is marked 'superseded' rather than revoked. It stays
+    valid and deployed until whoever installs the replacement gets to it —
+    revoking it here would break the running service immediately. Revoke it
+    yourself once the new one is in place.
+    """
+    async with db.execute("SELECT * FROM certificates WHERE id = ?", (cert_id,)) as cur:
+        old = await cur.fetchone()
+    if not old:
+        raise HTTPException(404, "Certificate not found")
+    if old["source"] != "issued" or not old["ca_id"] or not old["template_id"]:
+        raise HTTPException(
+            400,
+            "Only certificates issued by pktCert can be renewed — a discovered or "
+            "externally-issued certificate has to be replaced at its own CA.",
+        )
+    if old["status"] == "superseded" and old["renewed_to_id"]:
+        raise HTTPException(400, f"Already renewed by certificate {old['renewed_to_id']}")
+
+    async with db.execute("SELECT * FROM certificate_authorities WHERE id = ?", (old["ca_id"],)) as cur:
+        ca_row = await cur.fetchone()
+    if not ca_row:
+        raise HTTPException(404, "Issuing CA no longer exists")
+    if ca_row["status"] != "active":
+        raise HTTPException(400, f"Issuing CA is not active (status: {ca_row['status']})")
+
+    async with db.execute("SELECT * FROM cert_templates WHERE id = ?", (old["template_id"],)) as cur:
+        template_row = await cur.fetchone()
+    if not template_row:
+        raise HTTPException(404, "Template used for the original certificate no longer exists")
+
+    try:
+        sans = json.loads(old["san_json"] or "[]")
+    except ValueError:
+        sans = []
+
+    row, key_pem = await issuance.issue_certificate(
+        db, ca_row, template_row, old["common_name"], sans,
+        key_passphrase=body.key_passphrase or "",
+        renewed_from_id=cert_id,
+        auto_renew=old["auto_renew"] if body.auto_renew is None else body.auto_renew,
+        auto_renew_days=old["auto_renew_days"] if body.auto_renew_days is None else body.auto_renew_days,
+    )
+    await issuance.supersede(db, cert_id, row["id"])
+    await db.execute(
+        "INSERT INTO cert_events (certificate_id, ca_id, event_type, message) VALUES (?, ?, 'renewed', ?)",
+        (row["id"], ca_row["id"],
+         f"Renewed '{old['common_name']}' (replaces certificate {cert_id}) by {user['username']}"),
+    )
+    await db.execute(
+        "INSERT INTO cert_events (certificate_id, ca_id, event_type, message) VALUES (?, ?, 'renewed', ?)",
+        (cert_id, ca_row["id"], f"Superseded by certificate {row['id']}"),
+    )
+    await db.commit()
+    # Same contract as /issue: the new private key is shown once, here, as the
+    # direct response to the action that generated it.
+    return {**_cert_out(row), "private_key_pem": key_pem}
+
+
+class AutoRenewRequest(BaseModel):
+    auto_renew: bool
+    auto_renew_days: int = 30
+
+
+@router.patch("/{cert_id}/auto-renew")
+async def set_auto_renew(
+    cert_id: int, body: AutoRenewRequest, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)
+):
+    """Turn automatic renewal on or off for one certificate."""
+    async with db.execute("SELECT * FROM certificates WHERE id = ?", (cert_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Certificate not found")
+    if body.auto_renew and (row["source"] != "issued" or not row["ca_id"] or not row["template_id"]):
+        raise HTTPException(400, "Only certificates issued by pktCert can be auto-renewed")
+    if body.auto_renew_days < 1:
+        raise HTTPException(400, "auto_renew_days must be at least 1")
+
+    await db.execute(
+        "UPDATE certificates SET auto_renew = ?, auto_renew_days = ? WHERE id = ?",
+        (int(body.auto_renew), body.auto_renew_days, cert_id),
+    )
+    await db.commit()
+    async with db.execute("SELECT * FROM certificates WHERE id = ?", (cert_id,)) as cur:
+        updated = await cur.fetchone()
+    return _cert_out(updated)
 
 
 class RevokeRequest(BaseModel):

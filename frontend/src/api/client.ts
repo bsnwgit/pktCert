@@ -138,10 +138,16 @@ export const api = {
     request<{ pem: string }>(`/certificates/${id}/download`, {
       method: 'POST', body: JSON.stringify({ fmt, password }),
     }),
-  issueCertificate: (body: { common_name: string; sans: string[]; ca_id: number; template_id: number; key_passphrase?: string }) =>
+  issueCertificate: (body: { common_name: string; sans: string[]; ca_id: number; template_id: number; key_passphrase?: string; auto_renew?: boolean; auto_renew_days?: number }) =>
     request<Certificate & { private_key_pem?: string }>('/certificates/issue', { method: 'POST', body: JSON.stringify(body) }),
   signCsr: (body: { csr_pem: string; ca_id: number; template_id: number }) =>
     request<Certificate>('/certificates/csr', { method: 'POST', body: JSON.stringify(body) }),
+  renewCertificate: (id: number, body: { key_passphrase?: string } = {}) =>
+    request<Certificate & { private_key_pem?: string }>(`/certificates/${id}/renew`, { method: 'POST', body: JSON.stringify(body) }),
+  setAutoRenew: (id: number, auto_renew: boolean, auto_renew_days = 30) =>
+    request<Certificate>(`/certificates/${id}/auto-renew`, {
+      method: 'PATCH', body: JSON.stringify({ auto_renew, auto_renew_days }),
+    }),
   revokeCertificate: (id: number, reason: string) =>
     request<{ status: string }>(`/certificates/${id}/revoke`, { method: 'POST', body: JSON.stringify({ reason }) }),
   // Step-up re-auth: current password required to decrypt a stored private
@@ -430,7 +436,7 @@ export interface User {
   has_password: boolean
 }
 
-export type CertStatus = 'valid' | 'expiring' | 'expired' | 'revoked' | 'unknown'
+export type CertStatus = 'valid' | 'expiring' | 'expired' | 'revoked' | 'superseded' | 'unknown'
 export type CertSource = 'scan' | 'ct' | 'issued' | 'external'
 
 export interface Certificate {
@@ -461,6 +467,10 @@ export interface Certificate {
   revoked_at: string | null
   revoked_reason: string | null
   created_at: string
+  renewed_from_id: number | null
+  renewed_to_id: number | null
+  auto_renew: boolean
+  auto_renew_days: number
   private_key_pem?: string
 }
 

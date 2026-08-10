@@ -108,10 +108,17 @@ async def lifespan(app: FastAPI):
     app.state.scan_engine = scan_engine
     log.info("Certificate scan engine started")
 
+    from app.cert.renewal import RenewalEngine
+    renewal_engine = RenewalEngine()
+    await renewal_engine.start(settings.db_path)
+    app.state.renewal_engine = renewal_engine
+    log.info("Certificate renewal engine started")
+
     yield
 
     # -- Shutdown ----------------------------------------------------------------
     log.info("pktCert shutting down")
+    await renewal_engine.stop()
     await scan_engine.stop()
     await alert_engine.stop()
     await backup_scheduler.stop()
