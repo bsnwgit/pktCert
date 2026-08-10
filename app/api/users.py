@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.dependencies import CurrentUser, AdminUser
-from app.auth.local import hash_password, verify_password
+from app.auth.local import hash_password, verify_password, password_problem
 
 router = APIRouter()
 
@@ -80,6 +80,8 @@ async def list_users(user: AdminUser, db: aiosqlite.Connection = Depends(get_db)
 async def create_user(body: CreateUserRequest, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)):
     if body.role not in ("admin", "analyst", "viewer"):
         raise HTTPException(status_code=400, detail="Invalid role")
+    if problem := password_problem(body.password):
+        raise HTTPException(status_code=400, detail=problem)
     try:
         cur = await db.execute(
             "INSERT INTO users (username, email, hashed_password, role) VALUES (?, ?, ?, ?) RETURNING *",
@@ -105,6 +107,8 @@ async def update_user(user_id: int, body: UpdateUserRequest, user: AdminUser, db
     is_active = int(body.is_active) if body.is_active is not None else existing["is_active"]
     if role not in ("admin", "analyst", "viewer"):
         raise HTTPException(status_code=400, detail="Invalid role")
+    if body.password and (problem := password_problem(body.password)):
+        raise HTTPException(status_code=400, detail=problem)
 
     try:
         if body.password:
@@ -128,8 +132,8 @@ async def update_user(user_id: int, body: UpdateUserRequest, user: AdminUser, db
 @router.patch("/{user_id}/reset-password", status_code=204)
 async def reset_user_password(user_id: int, body: ResetPasswordRequest, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)):
     """Admin-only: set a user's password without knowing the current one."""
-    if not body.new_password or len(body.new_password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if problem := password_problem(body.new_password):
+        raise HTTPException(status_code=400, detail=problem)
     async with db.execute("SELECT id FROM users WHERE id = ?", (user_id,)) as cur:
         if not await cur.fetchone():
             raise HTTPException(status_code=404, detail="User not found")
@@ -171,6 +175,8 @@ async def change_my_password(body: ChangePasswordRequest, user: CurrentUser, db:
         row = await cur.fetchone()
     if not row or not row["hashed_password"] or not verify_password(body.current_password, row["hashed_password"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
+    if problem := password_problem(body.new_password):
+        raise HTTPException(status_code=400, detail=problem)
     await db.execute(
         "UPDATE users SET hashed_password = ? WHERE id = ?",
         (hash_password(body.new_password), user["id"]),

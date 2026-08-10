@@ -56,7 +56,7 @@ a CA exists — no template setup required for the common case.
 ## Issuing a certificate
 
 `POST /api/certificates/issue` — given a CA, a template, a Common Name,
-and optional SANs:
+optional SANs, and an optional `key_passphrase`:
 
 1. Generate a fresh keypair matching the template's algorithm/size.
 2. Build a CSR from that keypair (`x509_utils.generate_csr`).
@@ -69,6 +69,24 @@ and optional SANs:
    hand, it was never hidden from them), but it's also the last time it's
    shown without re-authenticating. See
    [Secrets & step-up re-auth](#secrets--step-up-re-auth) below.
+
+### Optional private-key passphrase
+
+The issue dialog offers **"Protect the private key with a passphrase"**
+(API: `key_passphrase`). When set, the key PEM produced at step 4 — both
+the copy returned to you and the copy stored for later download — is
+itself encrypted with that passphrase (PKCS#8
+`BestAvailableEncryption`), so installing it on a server requires
+entering it.
+
+pktCert does **not** store the passphrase. It records only the
+`key_encrypted` flag (migration `005`) so the UI can badge the
+certificate. A lost passphrase means a lost key — reissue.
+
+Don't confuse this with the Fernet encryption at rest applied to every
+stored private key: that is always on, managed by pktCert, and invisible
+to you. This passphrase is yours, and it travels with the exported PEM.
+Leave the box unticked and issuance behaves exactly as before.
 
 ## Signing an external CSR
 
@@ -84,9 +102,22 @@ the resulting certificate.
 `GET /api/cas/{id}/crl` builds a fresh Certificate Revocation List
 covering that CA's revoked, internally-issued certificates
 (`x509_utils.build_crl`), signs it with the CA's key, and increments the
-CA's `crl_number`. CRLs are generated on-demand, not cached — pull one
-before distributing it if you're serving CRLs to relying parties outside
-pktCert.
+CA's `crl_number`. This authenticated route always re-signs on demand.
+
+The **public** distribution point — `GET /crl/{ca_id}.crl`, the URL baked
+into issued certificates as their CRL Distribution Point — behaves
+slightly differently. It's unauthenticated and unthrottled by design (any
+relying party must be able to fetch it), and every rebuild costs a CA
+private-key signing operation, so a flood of anonymous requests would
+otherwise be a cheap way to burn CPU. That endpoint therefore serves a
+cached signed DER per CA, re-signing only when the revoked set changes or
+the cached copy is more than 5 minutes old. It also never writes —
+it reuses the CA's current `crl_number` rather than incrementing it, so
+anonymous polling can't drive up the CRL number.
+
+In practice: revoke a certificate and the public CRL reflects it on the
+next request, because the revoked set changed. The 5-minute ceiling only
+governs how long an *unchanged* CRL is reused.
 
 There is no OCSP responder — revocation status is only available via CRL
 (see the README's Known Gaps section).

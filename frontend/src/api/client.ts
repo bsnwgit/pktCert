@@ -138,7 +138,7 @@ export const api = {
     request<{ pem: string }>(`/certificates/${id}/download`, {
       method: 'POST', body: JSON.stringify({ fmt, password }),
     }),
-  issueCertificate: (body: { common_name: string; sans: string[]; ca_id: number; template_id: number }) =>
+  issueCertificate: (body: { common_name: string; sans: string[]; ca_id: number; template_id: number; key_passphrase?: string }) =>
     request<Certificate & { private_key_pem?: string }>('/certificates/issue', { method: 'POST', body: JSON.stringify(body) }),
   signCsr: (body: { csr_pem: string; ca_id: number; template_id: number }) =>
     request<Certificate>('/certificates/csr', { method: 'POST', body: JSON.stringify(body) }),
@@ -362,6 +362,7 @@ export interface Integration {
   base_url: string
   has_token: boolean
   enabled: boolean
+  verify_tls: boolean
   health_status: string
   last_health_check: string | null
 }
@@ -372,6 +373,7 @@ export interface IntegrationInput {
   base_url: string
   suite_token: string
   enabled?: boolean
+  verify_tls?: boolean
 }
 
 export interface UserApiKey {
@@ -452,6 +454,7 @@ export interface Certificate {
   template_id: number | null
   has_private_key: boolean
   has_passcode: boolean
+  key_encrypted: boolean
   first_seen_at: string
   last_seen_at: string
   revoked_at: string | null

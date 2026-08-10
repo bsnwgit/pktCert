@@ -26,11 +26,19 @@ log = logging.getLogger("pktcert.integrations")
 
 
 class SuiteClient:
-    def __init__(self, base_url: str, suite_token: str, suite_user: str = "pktcert", suite_role: str = "admin"):
+    def __init__(
+        self, base_url: str, suite_token: str, suite_user: str = "pktcert",
+        suite_role: str = "admin", verify_tls: bool = True,
+    ):
         self.base_url = base_url.rstrip("/")
         self.suite_token = suite_token
         self.suite_user = suite_user
         self.suite_role = suite_role
+        # Verify the sibling app's TLS cert by default — the suite_token is a
+        # full-access credential and must not be sent over an unverified
+        # channel. Callers may opt out per-connection (verify_tls=False) for an
+        # internal app serving a self-signed cert.
+        self.verify_tls = verify_tls
 
     def _headers(self) -> dict:
         return {
@@ -40,7 +48,7 @@ class SuiteClient:
         }
 
     async def get(self, path: str, params: Optional[dict] = None) -> Any:
-        async with httpx.AsyncClient(timeout=15, verify=False) as client:
+        async with httpx.AsyncClient(timeout=15, verify=self.verify_tls) as client:
             resp = await client.get(f"{self.base_url}{path}", headers=self._headers(), params=params)
             resp.raise_for_status()
             return resp.json()

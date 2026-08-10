@@ -108,8 +108,13 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7
 
     # -- CORS --------------------------------------------------------------------
+    # Fail closed: with no cors_origins configured, allow no cross-origin
+    # requests rather than "*". The SPA is same-origin so it is unaffected;
+    # "*" together with allow_credentials=True (see app/main.py) would let any
+    # site make credentialed cross-origin calls. config.example.yaml ships a
+    # scoped origin and install.sh substitutes the real one.
     cors_origins: list[str] = Field(
-        default=_yaml_cfg.get("cors_origins", ["*"])
+        default=_yaml_cfg.get("cors_origins", [])
     )
 
     # -- pktSuite integration (inbound — pktHub calling into this app) -----------
@@ -129,27 +134,48 @@ class Settings(BaseSettings):
 
 
 @lru_cache
-def get_settings() -> Settings:
+def _base_settings() -> Settings:
+    """Startup/infra settings from yaml + env. Cached — these don't change
+    without a restart (matches the historical @lru_cache on get_settings)."""
     return Settings()
 
 
-# suite_token_from_sqlite_patch — reads token from SQLite so /api/suite/register
-# takes effect immediately without service restart.
-_patched_get_settings = get_settings  # noqa: save original if it exists
+# suite_token lives in SQLite so /api/suite/register takes effect without a
+# restart, but get_settings() is called on *every* authenticated request (auth
+# dependency). Opening a fresh synchronous sqlite connection each time did
+# blocking disk I/O on the event loop — a per-request cost and a DoS amplifier.
+# We instead read the token at most once per _SUITE_TOKEN_TTL and cache it.
+import time as _time  # noqa: E402
 
-def get_settings() -> Settings:  # type: ignore[misc]
-    s = Settings()
+_SUITE_TOKEN_TTL = 5.0
+_suite_token_cache: dict = {"value": None, "ts": 0.0}
+
+
+def _current_suite_token(db_path: str, default: str) -> str:
+    now = _time.monotonic()
+    if now - _suite_token_cache["ts"] < _SUITE_TOKEN_TTL and _suite_token_cache["value"] is not None:
+        return _suite_token_cache["value"]
+    token = default
     try:
         import sqlite3 as _sq, json as _j
-        _db_path = s.db_path
-        _conn = _sq.connect(_db_path)
+        _conn = _sq.connect(db_path)
         _row = _conn.execute("SELECT value FROM settings WHERE key='suite_token'").fetchone()
         _conn.close()
         if _row and _row[0]:
             _val = _row[0]
             _tok = _j.loads(_val) if _val.startswith('"') else _val
             if _tok:
-                s = s.model_copy(update={'suite_token': _tok})
+                token = _tok
     except Exception:
         pass
+    _suite_token_cache["value"] = token
+    _suite_token_cache["ts"] = now
+    return token
+
+
+def get_settings() -> Settings:
+    s = _base_settings()
+    token = _current_suite_token(s.db_path, s.suite_token)
+    if token and token != s.suite_token:
+        return s.model_copy(update={"suite_token": token})
     return s

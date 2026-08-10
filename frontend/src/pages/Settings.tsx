@@ -530,17 +530,17 @@ const APP_LABELS: Record<string, string> = {
 }
 
 interface IntegrationFormState {
-  name: string; app_name: string; base_url: string; suite_token: string
+  name: string; app_name: string; base_url: string; suite_token: string; verify_tls: boolean
 }
 
-const EMPTY_INTEGRATION: IntegrationFormState = { name: '', app_name: 'pktipam', base_url: '', suite_token: '' }
+const EMPTY_INTEGRATION: IntegrationFormState = { name: '', app_name: 'pktipam', base_url: '', suite_token: '', verify_tls: true }
 
 function IntegrationFormModal({ integration, onClose, onSaved }: {
   integration: Integration | null; onClose: () => void; onSaved: () => void
 }) {
   const editing = !!integration
   const [form, setForm] = useState<IntegrationFormState>(
-    editing ? { name: integration!.name, app_name: integration!.app_name, base_url: integration!.base_url, suite_token: '' }
+    editing ? { name: integration!.name, app_name: integration!.app_name, base_url: integration!.base_url, suite_token: '', verify_tls: integration!.verify_tls ?? true }
             : { ...EMPTY_INTEGRATION }
   )
   const [saving, setSaving] = useState(false)
@@ -553,7 +553,7 @@ function IntegrationFormModal({ integration, onClose, onSaved }: {
     setError('')
     try {
       if (editing) {
-        const body: Partial<IntegrationInput> = { name: form.name, base_url: form.base_url }
+        const body: Partial<IntegrationInput> = { name: form.name, base_url: form.base_url, verify_tls: form.verify_tls }
         if (form.suite_token) body.suite_token = form.suite_token
         await api.updateIntegration(integration!.id, body)
       } else {
@@ -594,6 +594,16 @@ function IntegrationFormModal({ integration, onClose, onSaved }: {
             <label className="text-xs text-white block mb-1">Suite Token {editing ? '(leave blank to keep)' : '*'}</label>
             <input type="password" value={form.suite_token} onChange={e => setF('suite_token', e.target.value)}
               required={!editing} placeholder="From that app's Settings -> Security -> Suite Integration" className={inp} />
+          </div>
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" checked={form.verify_tls} onChange={e => setF('verify_tls', e.target.checked)}
+                className="rounded border-gray-600 bg-gray-800 text-sky-500 focus:ring-sky-500" />
+              <span className="text-xs text-white">Verify TLS certificate</span>
+            </label>
+            <p className="text-xs text-slate-400 mt-1">
+              Keep on for HTTPS. Turn off only for an internal app on a self-signed cert — the suite token is sent on every call, so an unverified connection can expose it.
+            </p>
           </div>
           {error && <p className="text-red-400 text-xs">{error}</p>}
           <div className="flex justify-end gap-3 pt-2">
@@ -1384,6 +1394,17 @@ const TABS: Array<{ id: TabId; label: string; adminOnly?: boolean; gapBefore?: b
   { id: 'discovery',     label: 'Discovery & Alerts' },
 ]
 
+// ── Top-level sections — Common holds the tabs that used to sit left of the
+// divider (gapBefore); the app-specific section holds gapBefore and everything
+// after it. Split point is derived from TABS itself, not duplicated here.
+type SectionId = 'common' | 'app'
+const APP_SECTION_LABEL = 'pktCert'
+const FIRST_APP_TAB_INDEX = TABS.findIndex(t => t.gapBefore)
+const sectionOfTab = (id: TabId): SectionId => {
+  const idx = TABS.findIndex(t => t.id === id)
+  return idx >= 0 && idx < FIRST_APP_TAB_INDEX ? 'common' : 'app'
+}
+
 // -- System tab — open-source packages actually used by this app (requirements.txt +
 // frontend/package.json), shown on the Licenses & Copyright card ------------------
 const OSS_NOTICES: Array<{ name: string; license: string }> = [
@@ -1445,6 +1466,12 @@ export default function Settings() {
   const initialTab = (searchParams.get('tab') as TabId | null)
   const initialSecurityTab = (searchParams.get('securityTab') as SecurityTabId | null)
   const [tab, setTab] = useState<TabId>(initialTab && TABS.some(t => t.id === initialTab) ? initialTab : 'general')
+  const [section, setSection] = useState<SectionId>(sectionOfTab(initialTab && TABS.some(t => t.id === initialTab) ? initialTab : 'general'))
+  const selectSection = (s: SectionId) => {
+    setSection(s)
+    const firstVisible = TABS.filter(t => !t.adminOnly || isAdmin).find(t => sectionOfTab(t.id) === s)
+    if (firstVisible) setTab(firstVisible.id)
+  }
   const [securityTab, setSecurityTab] = useState<SecurityTabId>(
     initialSecurityTab && SECURITY_TABS.some(t => t.id === initialSecurityTab) ? initialSecurityTab : (isAdmin ? 'users' : 'auth')
   )
@@ -1646,15 +1673,23 @@ export default function Settings() {
     <div className="space-y-4">
       <h1 className="text-xl font-bold text-white">pktCert - Settings</h1>
 
+      <div className="flex items-center gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1 w-fit">
+        <button onClick={() => selectSection('common')}
+          className={`text-sm px-4 py-1.5 rounded-lg whitespace-nowrap transition-colors ${section === 'common' ? 'bg-gray-700 text-white' : 'text-white hover:text-white'}`}>
+          Common
+        </button>
+        <button onClick={() => selectSection('app')}
+          className={`text-sm px-4 py-1.5 rounded-lg whitespace-nowrap transition-colors ${section === 'app' ? 'bg-gray-700 text-white' : 'text-white hover:text-white'}`}>
+          {APP_SECTION_LABEL}
+        </button>
+      </div>
+
       <div className="flex items-center gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1 w-fit overflow-x-auto">
-        {TABS.filter(t => !t.adminOnly || isAdmin).map(t => (
-          <Fragment key={t.id}>
-            {t.gapBefore && <div className="w-px self-stretch bg-gray-700 mx-2" />}
-            <button onClick={() => setTab(t.id)}
-              className={`text-sm px-4 py-1.5 rounded-lg whitespace-nowrap transition-colors ${tab === t.id ? 'bg-gray-700 text-white' : 'text-white hover:text-white'}`}>
-              {t.label}
-            </button>
-          </Fragment>
+        {TABS.filter(t => (!t.adminOnly || isAdmin) && sectionOfTab(t.id) === section).map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={`text-sm px-4 py-1.5 rounded-lg whitespace-nowrap transition-colors ${tab === t.id ? 'bg-gray-700 text-white' : 'text-white hover:text-white'}`}>
+            {t.label}
+          </button>
         ))}
       </div>
 
