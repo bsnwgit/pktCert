@@ -11,6 +11,11 @@ templates, and CSR signing.
 
 Log in with your username and password, or SSO if SAML is configured.
 
+Passwords must be at least 8 characters. After five failed attempts in a
+row, sign-in is blocked for that username from your machine for a few
+minutes — wait for it to clear and try again, or ask an admin to reset
+your password.
+
 | Action | Admin | Analyst | Viewer |
 |---|---|---|---|
 | View everything | ✓ | ✓ | ✓ |
@@ -24,6 +29,12 @@ Log in with your username and password, or SSO if SAML is configured.
 **Dashboard**, **Certificates**, **Scan Targets**, **Certificate
 Authorities**, **Templates**, **Alerts**, **Logs**. **Settings** appears
 only for admins.
+
+Settings has a section bar at the top with **Common** (General, Security,
+Data, Notifications, User Keys, System — the same in every pkt* app) and
+**pktCert** (Cert Settings, Cert Keys, Templates, Discovery & Alerts). The
+tab row below shows one section at a time, so switch sections if a tab
+looks missing.
 
 ## Dashboard
 
@@ -51,6 +62,14 @@ subject/issuer/SANs/serial/fingerprint, plus **View Certificate PEM** and
   and optional SANs. The private key is generated server-side and shown
   once immediately after issuance — copy it then, since viewing it again
   later requires re-entering your password (see below).
+
+  Optionally tick **"Protect the private key with a passphrase"** and
+  enter one twice. The exported key is then encrypted with it, so whoever
+  installs it on a server has to type that passphrase. pktCert does not
+  store the passphrase — if you lose it the key is unusable and the
+  certificate has to be reissued. Protected keys are marked with a 🔒 on
+  the issuance result and on the certificate's detail view. Leave the box
+  unticked for a plain, unencrypted key.
 - **+ Upload External Certificate** — for certs from an outside CA. Upload
   a PEM cert (+ optional separate key file) or a single PKCS#12 (.pfx/.p12)
   bundle, plus an optional **install/use passcode** — free text for

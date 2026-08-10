@@ -16,6 +16,8 @@ can't double as the one baked into issued certs.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import time
 from datetime import datetime, timezone
 
 import aiosqlite
@@ -27,6 +29,24 @@ from app.api.cas import build_crl_sync
 from app.database import get_db
 
 router = APIRouter()
+
+# In-process CRL cache. This endpoint is unauthenticated and unthrottled, and
+# each miss performs a CA private-key SIGNING operation — without a cache a
+# flood of anonymous GETs is a cheap CPU-exhaustion vector. We cache the
+# signed DER per CA and only re-sign when the revoked set changes or the entry
+# ages past _CRL_CACHE_TTL, so anonymous polling reuses one signature.
+_CRL_CACHE_TTL = 300.0  # seconds
+_crl_cache: dict[int, dict] = {}  # ca_id -> {"fp", "der", "next_update", "built": monotonic}
+
+
+def _revoked_fingerprint(crl_number: int, revoked: list) -> str:
+    h = hashlib.sha256()
+    h.update(str(crl_number).encode())
+    for r in revoked:
+        h.update(b"|")
+        h.update((r["serial_number"] or "").encode())
+        h.update(str(r["revoked_at"] or "").encode())
+    return h.hexdigest()
 
 
 @router.get("/{ca_id}.crl")
@@ -45,13 +65,22 @@ async def get_public_crl(ca_id: int, db: aiosqlite.Connection = Depends(get_db))
     # route has no login and no rate limit, so treating it as read-only
     # (reuse the CA's current crl_number, no DB write) avoids turning
     # arbitrary anonymous polling into a write-amplification vector.
-    crl_pem = await asyncio.to_thread(
-        build_crl_sync, dict(ca_row), [dict(r) for r in revoked], ca_row["crl_number"]
-    )
-    crl = x509.load_pem_x509_crl(crl_pem.encode())
-    crl_der = crl.public_bytes(serialization.Encoding.DER)
+    fp = _revoked_fingerprint(ca_row["crl_number"], revoked)
+    now = time.monotonic()
+    cached = _crl_cache.get(ca_id)
+    if cached and cached["fp"] == fp and (now - cached["built"]) < _CRL_CACHE_TTL:
+        crl_der = cached["der"]
+        next_update = cached["next_update"]
+    else:
+        crl_pem = await asyncio.to_thread(
+            build_crl_sync, dict(ca_row), [dict(r) for r in revoked], ca_row["crl_number"]
+        )
+        crl = x509.load_pem_x509_crl(crl_pem.encode())
+        crl_der = crl.public_bytes(serialization.Encoding.DER)
+        next_update = crl.next_update_utc
+        _crl_cache[ca_id] = {"fp": fp, "der": crl_der, "next_update": next_update, "built": now}
 
-    max_age = max(60, int((crl.next_update_utc - datetime.now(timezone.utc)).total_seconds()))
+    max_age = max(60, int((next_update - datetime.now(timezone.utc)).total_seconds()))
     return Response(
         content=crl_der,
         media_type="application/pkix-crl",

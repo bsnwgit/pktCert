@@ -44,6 +44,7 @@ checkout needed):
 - [Issuance Templates](#issuance-templates)
 - [Issuing & Revoking Certificates](#issuing--revoking-certificates)
 - [External Certificates & Secret Storage](#external-certificates--secret-storage)
+- [Settings Layout](#settings-layout)
 - [Configuration Reference](#configuration-reference)
 - [Running & Managing the Service](#running--managing-the-service)
 - [Roles & Auth](#roles--auth)
@@ -165,6 +166,26 @@ private key never leaves the requester's machine) is available via the API
 (`POST /api/certificates/csr`). Revoking a certificate is terminal, marks it
 in the inventory, and includes it in its CA's next CRL.
 
+### Passphrase-protecting the private key
+
+The issue dialog has an optional **"Protect the private key with a
+passphrase"** checkbox. Tick it and enter (plus confirm) a passphrase, and
+the private key PEM that pktCert hands back — and stores for later
+download — is itself encrypted with it (PKCS#8, `BestAvailableEncryption`).
+Anything that installs the key afterwards, e.g. a web server loading it at
+startup, must supply that passphrase.
+
+**pktCert never stores the passphrase.** It records only a
+`key_encrypted` flag so the UI can badge the certificate (🔒 next to the
+key algorithm on the detail view, and a warning on the issuance result).
+If the passphrase is lost, the key cannot be recovered — reissue instead.
+
+This is independent of the Fernet encryption at rest that protects
+*every* stored private key: that one is always on and is transparent to
+you, whereas this passphrase travels with the exported PEM. Over the API,
+pass `key_passphrase` in the `POST /api/certificates/issue` body; omit it
+(or send an empty string) for an unencrypted key, which stays the default.
+
 ## External Certificates & Secret Storage
 
 Certificates issued by an outside CA (purchased, Let's Encrypt, etc.) can
@@ -181,12 +202,39 @@ the audit log (`cert_events`). This bar applies equally to internally
 issued certificates and externally uploaded ones — there's one security
 model for every stored secret, not a weaker one for uploads.
 
+## Settings Layout
+
+Settings is organized into two **sections**, chosen from a section bar
+above the tab bar:
+
+| Section | Tabs |
+|---|---|
+| **Common** | General · Security (Users, Auth, Suite Integration, AI Assistant, SSL/TLS) · Data (Storage, Backups) · Notifications · User Keys · System |
+| **pktCert** | Cert Settings · Cert Keys · Templates · Discovery & Alerts |
+
+Common holds the settings identical across every pkt* app; pktCert holds
+this app's own. Selecting a section swaps the tab bar beneath it, so only
+one group's tabs is visible at a time — these previously shared a single
+long row separated by a thin divider. Deep links such as
+`/settings?tab=certsettings` (where the CRL base URL lives) still work and
+select the section automatically.
+
+---
+
 ## Configuration Reference
 
 See `config.example.yaml` for every startup/infrastructure setting
 (host/port, JWT secret, `credential_key` for encryption at rest, CORS,
 logging, SSL directory). Everything else (scan defaults, CA/template/alert
 data) lives in the app itself, editable from the UI.
+
+**`cors_origins` fails closed.** With nothing configured, pktCert allows
+*no* cross-origin requests rather than defaulting to `*`. The SPA is
+served same-origin so it is unaffected; the old `*` default combined with
+credentialed requests would have let any site call the API with a
+logged-in user's cookies. `config.example.yaml` ships a scoped origin and
+`install.sh` substitutes your real one — if you're calling the API from a
+genuinely different origin, list it there explicitly.
 
 ## Running & Managing the Service
 
@@ -203,6 +251,21 @@ revocation), `analyst` (manage Scan Targets, ack/resolve alerts),
 `viewer` (read-only). Local accounts or SAML 2.0 SSO — see Settings →
 Security → Auth.
 
+**Password policy.** Local passwords must be at least 8 characters. The
+rule is enforced identically on every path that sets one — admin creating
+a user, admin editing a user, admin resetting a password, and a user
+changing their own — from a single `password_problem()` check in
+`app/auth/local.py`.
+
+**Login throttling.** Five failed attempts for the same
+(client IP, username) pair within a rolling 5-minute window start
+returning `429 Too Many Requests` until the window clears; a successful
+login resets the counter immediately. bcrypt is deliberately slow, but on
+its own it doesn't stop a patient guessing loop. The counter is
+process-local (pktCert runs `workers=1`, so one process sees every
+attempt) and resets on restart — it's a speed bump against password
+spraying, not a substitute for an edge WAF or fail2ban.
+
 ## AI Assistant
 
 A floating chat panel answers questions about your certificate inventory,
@@ -210,6 +273,12 @@ scan results, and CA status. Configure a provider (local/Ollama,
 OpenAI-compatible endpoint, Anthropic, or OpenAI) under Settings → Security
 → AI Assistant. Scope-locked to pktCert's own domain — see
 `app/api/ai.py` for the guard implementation.
+
+Each provider call is allowed up to **180 seconds** to respond. The
+ceiling is sized for a local model on modest hardware working through a
+complex, multi-part question — a shorter one turned those into spurious
+failures. Cloud providers rarely approach it. On overrun the panel says
+the provider didn't finish in time and suggests a shorter question.
 
 ## Alerting
 
@@ -225,6 +294,16 @@ inbound Suite Token pktHub uses to proxy into pktCert with users already
 signed in, and outbound **Sibling pkt Apps** connections (named, reusable
 — e.g. pktIPAM, to resolve a scanned certificate's host against pktIPAM's
 internal address inventory over the same authenticated channel).
+
+**Outbound TLS verification is per-connection and on by default.** Each
+sibling connection carries a `verify_tls` flag (added by migration `005`,
+defaulting to `1`). A suite token is a full-access credential, so pktCert
+verifies the target's certificate before sending it — previously every
+outbound suite call passed `verify=False` unconditionally, which made
+those tokens interceptable on the wire. If one internal app genuinely
+serves a self-signed certificate, turn verification off for *that*
+connection alone rather than globally; the better fix is to issue that app
+a certificate from one of your own CAs here and leave verification on.
 
 ## User Keys & IP Lookup
 

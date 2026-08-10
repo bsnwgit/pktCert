@@ -31,6 +31,7 @@ class IntegrationCreate(BaseModel):
     base_url: str
     suite_token: str
     enabled: bool = True
+    verify_tls: bool = True
 
 
 class IntegrationUpdate(BaseModel):
@@ -38,12 +39,19 @@ class IntegrationUpdate(BaseModel):
     base_url: str | None = None
     suite_token: str | None = None
     enabled: bool | None = None
+    verify_tls: bool | None = None
+
+
+def _verify_tls(r) -> bool:
+    """verify_tls column added in migration 005; default to secure if absent."""
+    return bool(r["verify_tls"]) if "verify_tls" in r.keys() and r["verify_tls"] is not None else True
 
 
 def _out(r) -> dict:
     return {
         "id": r["id"], "name": r["name"], "app_name": r["app_name"], "base_url": r["base_url"],
         "has_token": bool(r["suite_token"]), "enabled": bool(r["enabled"]),
+        "verify_tls": _verify_tls(r),
         "health_status": r["health_status"], "last_health_check": r["last_health_check"],
     }
 
@@ -61,10 +69,10 @@ async def create_integration(body: IntegrationCreate, user: AdminUser, db: aiosq
         raise HTTPException(status_code=400, detail=f"app_name must be one of {_APPS}")
     try:
         cur = await db.execute(
-            """INSERT INTO integrations (name, app_name, base_url, suite_token, enabled)
-               VALUES (?, ?, ?, ?, ?) RETURNING *""",
+            """INSERT INTO integrations (name, app_name, base_url, suite_token, enabled, verify_tls)
+               VALUES (?, ?, ?, ?, ?, ?) RETURNING *""",
             (body.name, body.app_name, body.base_url.rstrip("/"),
-             encrypt_str(body.suite_token) if body.suite_token else "", int(body.enabled)),
+             encrypt_str(body.suite_token) if body.suite_token else "", int(body.enabled), int(body.verify_tls)),
         )
         row = await cur.fetchone()
         await db.commit()
@@ -92,8 +100,9 @@ async def update_integration(integration_id: int, body: IntegrationUpdate, user:
     try:
         await db.execute(
             """UPDATE integrations SET name = ?, base_url = ?, suite_token = ?, enabled = ?,
-               updated_at = datetime('now') WHERE id = ?""",
-            (existing["name"], existing["base_url"], existing["suite_token"], int(existing["enabled"]), integration_id),
+               verify_tls = ?, updated_at = datetime('now') WHERE id = ?""",
+            (existing["name"], existing["base_url"], existing["suite_token"], int(existing["enabled"]),
+             int(_verify_tls(existing)), integration_id),
         )
         await db.commit()
     except aiosqlite.IntegrityError:
@@ -116,7 +125,8 @@ async def test_integration(integration_id: int, user: AdminUser, db: aiosqlite.C
     if not row or not row["base_url"]:
         raise HTTPException(status_code=400, detail="Integration is not configured yet")
 
-    client = SuiteClient(row["base_url"], decrypt_str(row["suite_token"]), suite_user="pktcert", suite_role="admin")
+    client = SuiteClient(row["base_url"], decrypt_str(row["suite_token"]), suite_user="pktcert",
+                         suite_role="admin", verify_tls=_verify_tls(row))
     healthy, detail = await client.health_check()
     status_str = "ok" if healthy else "error"
     await db.execute(
