@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app import notifications
 from app.database import get_db
 from app.dependencies import CurrentUser, AnalystUser, AdminUser
 
@@ -22,7 +23,10 @@ _CONDITION_TYPES = {
     "ca_expiring", "scan_target_unreachable",
 }
 
-_CHANNEL_TYPES = {"inapp", "email", "webhook", "slack"}
+# Mirrors app/notifications.py, which owns the senders. Settings -> Notifications
+# has always been able to configure and test PagerDuty and TraceCat, but rules
+# couldn't target them because this set was narrower than the senders available.
+_CHANNEL_TYPES = notifications.CHANNEL_TYPES
 
 _CSV_COLUMNS = ["name", "condition_type", "threshold", "severity", "enabled", "cooldown_min", "channels"]
 
