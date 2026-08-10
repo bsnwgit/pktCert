@@ -1369,7 +1369,7 @@ function UsersTab() {
 }
 
 // -- Main page ---------------------------------------------------------------------
-type TabId = 'general' | 'security' | 'data' | 'notifications' | 'apikeys' | 'system' | 'certkeys' | 'templates' | 'discovery'
+type TabId = 'general' | 'security' | 'data' | 'notifications' | 'apikeys' | 'system' | 'certsettings' | 'certkeys' | 'templates' | 'discovery'
 
 const TABS: Array<{ id: TabId; label: string; adminOnly?: boolean; gapBefore?: boolean }> = [
   { id: 'general',       label: 'General' },
@@ -1378,7 +1378,8 @@ const TABS: Array<{ id: TabId; label: string; adminOnly?: boolean; gapBefore?: b
   { id: 'notifications', label: 'Notifications' },
   { id: 'apikeys',       label: 'User Keys' },
   { id: 'system',        label: 'System' },
-  { id: 'certkeys',      label: 'Cert Keys',         gapBefore: true },
+  { id: 'certsettings',  label: 'Cert Settings',     gapBefore: true },
+  { id: 'certkeys',      label: 'Cert Keys' },
   { id: 'templates',     label: 'Templates' },
   { id: 'discovery',     label: 'Discovery & Alerts' },
 ]
@@ -1516,6 +1517,7 @@ export default function Settings() {
     'okta_saml_enabled', 'okta_saml_idp_entity_id', 'okta_saml_idp_sso_url',
     'okta_saml_idp_cert', 'okta_saml_sp_entity_id', 'okta_saml_sp_cert', 'okta_saml_sp_key',
   ], settings, load)
+  const crlSave = useSave(['crl_base_url'], settings, load)
   const backupSave = useSave(['backup_enabled', 'backup_interval_hours', 'backup_rotation_count', 'backup_path'], settings, load)
   const storageSave = useSave(['alert_event_retention_days'], settings, load)
   const lucidSave = useSave(['lucid_api_token'], settings, load)
@@ -2308,6 +2310,23 @@ export default function Settings() {
             <img src="barsoftnetware-logo.png" alt="Barsoft Netware" className="h-56 w-auto" />
           </div>
         </div>
+      )}
+
+      {/* Cert Settings — CA/PKI-specific server config, kept separate from General's app-wide Base URL */}
+      {tab === 'certsettings' && (
+        <Section title="Cert Settings" onSave={crlSave.save} saving={crlSave.saving} saved={crlSave.saved} error={crlSave.error}
+          help={{
+            title: 'Cert Settings — How It Works',
+            content: <>
+              <p><span className="text-gray-300 font-medium">CRL Base URL</span> feeds the CRL Distribution Point baked into every certificate issued from now on. Keep it plain <span className="text-gray-300 font-medium">http://</span>, not https:// — standard PKI practice, since checking revocation over HTTPS creates a circular trust dependency (validating the CRL fetch's own cert would itself require a revocation check), and the CRL is already self-verifying via the issuing CA's signature.</p>
+              <p>This is baked into each certificate at the moment it's issued, not looked up live — set it correctly <span className="text-gray-300 font-medium">before</span> issuing certs you want revocation-checkable. Changing it later has no effect on certs already issued; they keep pointing at whatever URL was set when they were signed.</p>
+            </>,
+          }}
+        >
+          <Field label="CRL Base URL" hint="Used for the CRL link baked into issued certs — keep this http://, not https://">
+            <TextInput value={str('crl_base_url')} onChange={v => set('crl_base_url', v)} placeholder="http://SERVER-IP:8763" />
+          </Field>
+        </Section>
       )}
 
       {/* Templates — issuance templates (key algorithm/size, validity, EKU), moved here from its own top-level page */}

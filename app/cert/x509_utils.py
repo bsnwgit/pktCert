@@ -165,6 +165,7 @@ def sign_certificate(
     validity_days: int = 365,
     key_usage: Optional[list[str]] = None,
     extended_key_usage: Optional[list[str]] = None,
+    crl_url: Optional[str] = None,
 ) -> x509.Certificate:
     """Sign a CSR with the given CA, applying the template's usage extensions."""
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -195,6 +196,20 @@ def sign_certificate(
     ).add_extension(
         x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_cert.public_key()), critical=False
     )
+
+    # Without this, nothing consuming the cert has any way to discover a
+    # CRL exists — revoking a cert would only ever update pktCert's own
+    # database, never anything the client trusting the cert can see.
+    if crl_url:
+        builder = builder.add_extension(
+            x509.CRLDistributionPoints([
+                x509.DistributionPoint(
+                    full_name=[x509.UniformResourceIdentifier(crl_url)],
+                    relative_name=None, reasons=None, crl_issuer=None,
+                )
+            ]),
+            critical=False,
+        )
 
     return builder.sign(ca_key, hashes.SHA256())
 

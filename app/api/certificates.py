@@ -239,7 +239,7 @@ class IssueRequest(BaseModel):
     template_id: int
 
 
-def _issue_sync(ca_row: dict, template_row: dict, common_name: str, sans: list[str]) -> tuple:
+def _issue_sync(ca_row: dict, template_row: dict, common_name: str, sans: list[str], crl_url: str) -> tuple:
     ca_cert = x509_utils.cert_from_pem(ca_row["cert_pem"])
     ca_key = x509_utils.key_from_pem(decrypt_str(ca_row["private_key_enc"]))
     leaf_key = x509_utils.generate_private_key(template_row["key_algorithm"], template_row["key_size"])
@@ -249,8 +249,28 @@ def _issue_sync(ca_row: dict, template_row: dict, common_name: str, sans: list[s
         validity_days=template_row["validity_days"],
         key_usage=json.loads(template_row["key_usage_json"]),
         extended_key_usage=json.loads(template_row["extended_key_usage_json"]),
+        crl_url=crl_url,
     )
     return x509_utils.cert_to_pem(cert), x509_utils.key_to_pem(leaf_key)
+
+
+async def _get_crl_base_url(db: aiosqlite.Connection) -> str:
+    """Deliberately a separate setting from SAML's 'base_url' (app/auth/saml.py)
+    even though both are "this app's externally-reachable address" — SAML
+    wants https:// when SSO is configured, but a CRL Distribution Point
+    should stay plain http:// (standard PKI practice: checking revocation
+    over HTTPS creates a circular trust dependency, and the CRL is already
+    self-verifying via the CA's own signature). Falls back to localhost,
+    which only works for same-host testing; an admin must set 'crl_base_url'
+    in Settings for CRL checking to work from any other device."""
+    async with db.execute("SELECT value FROM settings WHERE key = 'crl_base_url'") as cur:
+        row = await cur.fetchone()
+    if not row or not row[0]:
+        return "http://localhost:8763"
+    try:
+        return str(json.loads(row[0])).rstrip("/") or "http://localhost:8763"
+    except (ValueError, TypeError):
+        return str(row[0]).rstrip("/")
 
 
 @router.post("/issue", status_code=201)
@@ -271,8 +291,10 @@ async def issue_certificate(body: IssueRequest, user: AdminUser, db: aiosqlite.C
     # common name must always be present in SAN too or the issued cert will
     # look valid (right issuer, right CN) but fail hostname verification.
     sans = list(dict.fromkeys([body.common_name, *body.sans]))
+    crl_base_url = await _get_crl_base_url(db)
+    crl_url = f"{crl_base_url}/crl/{body.ca_id}.crl"
     cert_pem, key_pem = await asyncio.to_thread(
-        _issue_sync, dict(ca_row), dict(template_row), body.common_name, sans
+        _issue_sync, dict(ca_row), dict(template_row), body.common_name, sans, crl_url
     )
     info = x509_utils.parse_certificate(cert_pem)
 
