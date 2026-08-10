@@ -367,6 +367,10 @@ python3 tests/test_renewal.py
 python3 tests/test_chain_and_constraints.py
 ```
 
+```bash
+python3 tests/test_ca_lifecycle.py
+```
+
 - **test_pki_correctness** — CRL Distribution Points on every issuance path,
   CSR proof-of-possession, CN-in-SAN, RFC 5280 CRL numbering
 - **test_alert_notifications** — real delivery to a live HTTP receiver,
@@ -375,6 +379,8 @@ python3 tests/test_chain_and_constraints.py
   and the auto-renewal window
 - **test_chain_and_constraints** — AIA chain building, CA path length and name
   constraints, RFC 5280 revocation reason codes
+- **test_ca_lifecycle** — CA import validation (key/cert pairing, CA-ness,
+  encrypted keys) and disable-rather-than-delete retirement
 
 ## Contributing
 

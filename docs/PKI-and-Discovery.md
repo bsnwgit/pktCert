@@ -27,15 +27,43 @@ already-established internal CA under pktCert's management, or for a CA
 whose root key you deliberately keep offline and only import the day-to-day
 signing intermediate.
 
+The import is validated before anything is stored:
+
+- the private key must actually belong to the certificate
+- the certificate must assert `BasicConstraints(ca=True)`
+- if it carries a KeyUsage extension, it must include `keyCertSign`
+- a passphrase-encrypted key is accepted via `key_passphrase` (which is how
+  any properly stored CA key is kept)
+
+None of this was checked before, so a leaf certificate imported as a "CA", or
+a certificate paired with an unrelated key, was accepted without complaint —
+and the failure then surfaced far from the mistake: at signing time, or at
+every relying party trying to verify something that CA had issued.
+
+Path length and name constraints are read back out of an imported CA's
+certificate, so it displays the same constraint information as a generated
+one rather than appearing unconstrained.
+
 **Private keys are never returned by any API response.** They're
 Fernet-encrypted at rest (`certificate_authorities.private_key_enc`,
 `app/cert/crypto.py`) using the `credential_key` from `config.yaml`, and
 are only ever decrypted in-process, immediately before a signing
 operation, then discarded.
 
-**Deleting a CA** is blocked while it still has active (non-revoked)
-issued certificates — revoke or let them expire first
-(`DELETE /api/cas/{id}` returns 400 with the count).
+**Retiring a CA.** `PATCH /api/cas/{id}/status` disables a CA: it stops
+issuing, but it stays in the inventory, keeps publishing its CRL, and stays
+fetchable at its AIA URL — because the certificates it already issued are
+still deployed and still being validated. This is what retiring a CA should
+look like, and it's almost always what you want.
+
+**Deleting a CA** (`DELETE /api/cas/{id}`) only works on a CA that has never
+issued a certificate, and has no intermediates beneath it.
+
+The old rule allowed deletion once no *non-revoked* certificates remained,
+which is precisely backwards: revoked certificates are the ones that most
+need their CA alive, since deleting it destroys the only key that can sign
+the CRL carrying their revocations — while those certificates are still out
+there being trusted. It also cascaded away the CA's entire audit history.
 
 ### Constraints: path length and name constraints
 

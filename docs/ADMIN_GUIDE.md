@@ -123,11 +123,30 @@ window (default 90 days, Settings → Data → Storage).
 
 Configure schedule and rotation at Settings → Data → Backups, or trigger
 immediately with **Run backup now**. Each snapshot is a timestamped
-directory under the configured backup path containing `pktcert.db` +
-`config.yaml` — which means CA private keys and every other secret travel
-with the backup, encrypted under the same `credential_key` recorded in
-that snapshot's `config.yaml`. Treat backup storage with the same care as
-the live server.
+directory under the configured backup path containing `pktcert.db` and a
+`RESTORE-NOTES.txt`.
+
+**`config.yaml` is deliberately NOT included.** The database holds every CA
+private key, encrypted with `credential_key` — and `credential_key` lives in
+`config.yaml`. Putting both in one snapshot stores the safe next to its key:
+a single stolen or mis-synced backup would yield every CA private key in
+plaintext, and backups are exactly the thing that ends up rsynced to a NAS or
+copied to a laptop.
+
+**This means you must back up `config.yaml` yourself, and store it somewhere
+other than the snapshots.** Without it, the CA private keys in a restored
+database cannot be decrypted and are permanently unusable. Back it up once
+and after any change — it is small and changes rarely.
+
+Set `backup_include_config` if you would rather have single-directory
+restore and accept that the snapshot then contains everything needed to
+impersonate your CAs.
+
+The downloadable full bundle (Settings → Data → Backups → export) *does*
+include `config.yaml`, because it exists to move a whole installation to a
+new host in one step. Its `RESTORE.md` says so prominently: treat that file
+as key material, move it to encrypted storage immediately, and delete it once
+the restore is done.
 
 **Restoring:**
 - Every listed snapshot has a **Restore…** link — restores directly from
