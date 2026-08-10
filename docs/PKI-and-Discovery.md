@@ -227,6 +227,38 @@ An auto-renewal gets no key passphrase — there is nobody at a keyboard to
 supply or receive one. The key is still Fernet-encrypted at rest like every
 other stored key, and retrievable through the usual step-up re-auth.
 
+## Separation of duties (optional)
+
+**Off by default.** With it off, issuing and revoking behave exactly as they
+always have: immediate, no queue, no extra step. A small team where everyone is
+trusted equally gains nothing from an approval workflow and pays for it on
+every issuance, so it has to be opted into — Settings → Cert Settings, one
+toggle for issuance and one for revocation.
+
+With it on, `POST /api/certificates/issue` and `.../revoke` stop acting. They
+record a pending request (`cert_requests`, migration `010`) and return HTTP
+202 with its id. A **different** admin then approves it via
+`POST /api/approvals/{id}/approve`, and *that* is what performs the real
+issuance or revocation — through the same `app/cert/issuance.py` path as a
+direct call, so an approved certificate is indistinguishable from a directly
+issued one.
+
+Self-approval is refused. One person clicking twice is not two pairs of eyes,
+and permitting it would make the control decorative — which is worse than not
+having it at all, because it still looks like a control in an audit. The
+practical consequence: **an install with a single admin account cannot approve
+anything**, and should leave this off. The Approvals page says so directly when
+it detects that situation.
+
+Withdrawing a pending request is always allowed, by its requester or any admin.
+Cancelling can only ever prevent an action, never cause one, so it isn't a way
+around the two-person rule.
+
+On an approved issuance no key passphrase is applied — the requester isn't
+present to choose one, and the approver shouldn't invent a secret on their
+behalf. The key is Fernet-encrypted at rest as always, and the requester
+retrieves it through the usual step-up re-auth.
+
 ## Revocation & CRLs
 
 `POST /api/certificates/{id}/revoke` marks a certificate `revoked`

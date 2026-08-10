@@ -24,11 +24,13 @@ import json
 
 import aiosqlite
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.auth.local import verify_password
 from app.database import get_db
 from app.dependencies import AdminUser, CurrentUser
+from app.api import approvals
 from app.cert import issuance, x509_utils
 from app.cert.crypto import decrypt_str, encrypt_str
 
@@ -251,6 +253,9 @@ class IssueRequest(BaseModel):
     key_passphrase: str = ""
     auto_renew: bool = False
     auto_renew_days: int = 30
+    # Shown to whoever approves this, when approval is required. Ignored
+    # otherwise.
+    justification: str = ""
 
 
 @router.post("/issue", status_code=201)
@@ -266,6 +271,29 @@ async def issue_certificate(body: IssueRequest, user: AdminUser, db: aiosqlite.C
         template_row = await cur.fetchone()
     if not template_row:
         raise HTTPException(404, "Template not found")
+
+    # Separation of duties, when it's switched on (off by default — see
+    # app/api/approvals.py). Nothing is issued here; a second admin's approval
+    # is what performs the issuance.
+    if await approvals.approval_required(db, "issue"):
+        request_row = await approvals.create_request(
+            db, user, "issue",
+            common_name=body.common_name, sans=body.sans,
+            ca_id=body.ca_id, template_id=body.template_id,
+            auto_renew=body.auto_renew, auto_renew_days=body.auto_renew_days,
+            justification=body.justification,
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "pending_approval": True,
+                "request_id": request_row["id"],
+                "detail": (
+                    f"Request {request_row['id']} is awaiting approval from another admin. "
+                    "The certificate and its private key are created at approval time."
+                ),
+            },
+        )
 
     row, key_pem = await issuance.issue_certificate(
         db, ca_row, template_row, body.common_name, body.sans,
@@ -472,6 +500,7 @@ class RevokeRequest(BaseModel):
     # tell a compromised key from a routine replacement. The free-text `reason`
     # above stays a human note and never leaves this database.
     reason_code: str = "unspecified"
+    justification: str = ""
 
 
 @router.post("/{cert_id}/revoke")
@@ -486,6 +515,28 @@ async def revoke_certificate(cert_id: int, body: RevokeRequest, user: AdminUser,
         row = await cur.fetchone()
     if not row:
         raise HTTPException(404, "Certificate not found")
+
+    # Separation of duties, when switched on. Revocation is as consequential as
+    # issuance in the other direction — it can take a service offline — so it
+    # gets its own toggle rather than riding on the issuance one.
+    if await approvals.approval_required(db, "revoke"):
+        request_row = await approvals.create_request(
+            db, user, "revoke",
+            certificate_id=cert_id, reason=body.reason, reason_code=body.reason_code,
+            ca_id=row["ca_id"], justification=body.justification,
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "pending_approval": True,
+                "request_id": request_row["id"],
+                "detail": (
+                    f"Request {request_row['id']} is awaiting approval from another admin. "
+                    "The certificate is still valid until then."
+                ),
+            },
+        )
+
     await db.execute(
         """UPDATE certificates SET status = 'revoked', revoked_at = datetime('now'),
            revoked_reason = ?, revoked_reason_code = ? WHERE id = ?""",
