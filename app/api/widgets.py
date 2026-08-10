@@ -6,6 +6,8 @@ Views:    GET /api/widgets/{id}      → server-rendered HTML page (iframe targe
 """
 from __future__ import annotations
 
+import html
+
 import aiosqlite
 from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
@@ -89,8 +91,8 @@ def _status_badge(status: str) -> str:
     if s == "expiring":
         return '<span class="badge by">EXPIRING</span>'
     if s in ("expired", "revoked"):
-        return '<span class="badge br">{}</span>'.format(s.upper())
-    return f'<span class="badge bn">{(status or "UNKNOWN").upper()}</span>'
+        return '<span class="badge br">{}</span>'.format(html.escape(s.upper()))
+    return f'<span class="badge bn">{html.escape((status or "UNKNOWN").upper())}</span>'
 
 
 # ── Certificate Summary widget ─────────────────────────────────────────────────
@@ -133,8 +135,8 @@ async def widget_expiring_certificates():
 
     if rows:
         trs = "".join(
-            f"<tr><td>{r['common_name']}</td><td>{_status_badge(r['status'])}</td>"
-            f"<td>{(r.get('source') or '').upper()}</td><td>{str(r['not_after'] or '')[:19].replace('T', ' ')}</td></tr>"
+            f"<tr><td>{html.escape(str(r['common_name']))}</td><td>{_status_badge(r['status'])}</td>"
+            f"<td>{html.escape((r.get('source') or '').upper())}</td><td>{html.escape(str(r['not_after'] or '')[:19].replace('T', ' '))}</td></tr>"
             for r in rows
         )
         body = (
@@ -166,8 +168,8 @@ async def widget_active_alerts():
     if rows:
         trs = "".join(
             f"<tr><td>{_status_badge('expired' if r['severity'] == 'critical' else 'expiring')}</td>"
-            f"<td>{r.get('common_name') or ''}</td><td>{r['message']}</td>"
-            f"<td>{str(r['created_at'])[:19].replace('T',' ')}</td></tr>"
+            f"<td>{html.escape(str(r.get('common_name') or ''))}</td><td>{html.escape(str(r['message']))}</td>"
+            f"<td>{html.escape(str(r['created_at'])[:19].replace('T',' '))}</td></tr>"
             for r in rows
         )
         body = (
