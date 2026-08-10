@@ -189,6 +189,23 @@ export const api = {
     request<CertificateAuthority>('/cas/generate', { method: 'POST', body: JSON.stringify(body) }),
   importCa: (body: { name: string; cert_pem: string; private_key_pem: string; ca_type: string; parent_ca_id?: number | null; key_passphrase?: string }) =>
     request<CertificateAuthority>('/cas/import', { method: 'POST', body: JSON.stringify(body) }),
+  // Offline root workflow — the root's private key never enters pktCert.
+  importRootCert: (body: { name: string; cert_pem: string }) =>
+    request<CertificateAuthority>('/cas/import-root-cert', { method: 'POST', body: JSON.stringify(body) }),
+  requestIntermediate: (body: {
+    name: string; parent_ca_id: number; key_algorithm: string; key_size: number
+    path_length?: number | null
+    permitted_dns?: string[]; excluded_dns?: string[]; permitted_ip?: string[]; excluded_ip?: string[]
+  }) =>
+    request<CertificateAuthority & { csr_pem: string }>('/cas/request-intermediate', { method: 'POST', body: JSON.stringify(body) }),
+  getCaCsr: (id: number) =>
+    request<{ name: string; csr_pem: string; status: string }>(`/cas/${id}/csr`),
+  importSignedCert: (id: number, cert_pem: string) =>
+    request<CertificateAuthority>(`/cas/${id}/import-signed-cert`, { method: 'POST', body: JSON.stringify({ cert_pem }) }),
+  uploadCrl: (id: number, crl_pem: string) =>
+    request<{ status: string; this_update: string; next_update: string | null; revoked_count: number }>(
+      `/cas/${id}/upload-crl`, { method: 'POST', body: JSON.stringify({ crl_pem }) }),
+
   setCaStatus: (id: number, status: 'active' | 'disabled') =>
     request<CertificateAuthority>(`/cas/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
   deleteCa: (id: number) => request(`/cas/${id}`, { method: 'DELETE' }),
@@ -542,9 +559,12 @@ export interface CertificateAuthority {
   signature_algorithm: string
   not_before: string
   not_after: string
-  status: 'active' | 'disabled' | 'expired' | 'revoked'
+  status: 'active' | 'disabled' | 'expired' | 'revoked' | 'pending_signature'
   crl_number: number
   path_length: number | null
+  key_storage: 'local' | 'offline'
+  has_csr: boolean
+  has_uploaded_crl: boolean
   name_constraints: {
     permitted_dns: string[]; excluded_dns: string[]
     permitted_ip: string[]; excluded_ip: string[]

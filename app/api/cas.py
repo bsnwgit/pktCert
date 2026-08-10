@@ -35,6 +35,10 @@ def _ca_out(r) -> dict:
         # Constraint metadata (migration 009), guarded so a row read before the
         # migration applied still renders.
         "path_length": r["path_length"] if "path_length" in r.keys() else None,
+        # Offline-root support (migration 011).
+        "key_storage": r["key_storage"] if "key_storage" in r.keys() else "local",
+        "has_csr": bool(r["csr_pem"]) if "csr_pem" in r.keys() else False,
+        "has_uploaded_crl": bool(r["uploaded_crl_pem"]) if "uploaded_crl_pem" in r.keys() else False,
         "name_constraints": (
             json.loads(r["name_constraints_json"])
             if "name_constraints_json" in r.keys() and r["name_constraints_json"]
@@ -239,6 +243,280 @@ async def import_ca(body: CaImportRequest, user: AdminUser, db: aiosqlite.Connec
     return _ca_out(row)
 
 
+# ── Offline root workflow ──────────────────────────────────────────────────
+#
+# The root's private key never enters pktCert. It holds the root certificate
+# only; an intermediate keypair is generated here, its CSR is carried to the
+# offline machine and signed there, and the signed certificate comes back.
+# Issuance then runs off the intermediate, so a compromise of this server
+# costs an intermediate that can be revoked rather than the root every
+# machine trusts.
+
+
+class RootCertImportRequest(BaseModel):
+    name: str
+    cert_pem: str
+
+
+@router.post("/import-root-cert")
+async def import_root_certificate(
+    body: RootCertImportRequest, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)
+):
+    """Register an offline root by certificate alone — no private key.
+
+    pktCert can never sign with this CA. That is the entire point: the key is
+    somewhere this server cannot reach, so compromising this server cannot
+    produce a certificate under the root.
+    """
+    try:
+        cert = x509_utils.cert_from_pem(body.cert_pem)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid certificate: {e}")
+
+    problems = x509_utils.certificate_ca_problems(cert)
+    if problems:
+        raise HTTPException(400, "This certificate cannot act as a CA: " + "; ".join(problems))
+
+    info = x509_utils.parse_certificate(body.cert_pem)
+    path_length, constraints = x509_utils.certificate_constraints(cert)
+
+    # private_key_enc is NOT NULL in the schema and there is no key to put in
+    # it. Empty string records "deliberately absent" — every signing path
+    # checks key_storage, not this column, so an empty value can never be
+    # mistaken for a usable key.
+    cur = await db.execute(
+        """INSERT INTO certificate_authorities
+           (name, ca_type, subject, cert_pem, private_key_enc, key_algorithm, key_size,
+            signature_algorithm, not_before, not_after, source, key_storage,
+            path_length, name_constraints_json)
+           VALUES (?, 'root', ?, ?, '', ?, ?, ?, ?, ?, 'imported', 'offline', ?, ?) RETURNING *""",
+        (body.name, info["subject"], body.cert_pem, info["key_algorithm"], info["key_size"],
+         info["signature_algorithm"], info["not_before"], info["not_after"],
+         path_length, json.dumps(constraints) if constraints else None),
+    )
+    row = await cur.fetchone()
+    await db.execute(
+        "INSERT INTO cert_events (ca_id, event_type, message) VALUES (?, 'issued', ?)",
+        (row["id"], f"Offline root CA '{body.name}' registered (certificate only — no private key held)"),
+    )
+    await db.commit()
+    return _ca_out(row)
+
+
+class IntermediateCsrRequest(BaseModel):
+    name: str
+    parent_ca_id: int
+    key_algorithm: str = "rsa"
+    key_size: int = 4096
+    path_length: int | None = 0
+    permitted_dns: list[str] = []
+    excluded_dns: list[str] = []
+    permitted_ip: list[str] = []
+    excluded_ip: list[str] = []
+
+    def constraints(self) -> dict:
+        return {
+            "permitted_dns": self.permitted_dns, "excluded_dns": self.excluded_dns,
+            "permitted_ip": self.permitted_ip, "excluded_ip": self.excluded_ip,
+        }
+
+
+def _generate_intermediate_csr_sync(body: IntermediateCsrRequest) -> tuple[str, str]:
+    key = x509_utils.generate_private_key(body.key_algorithm, body.key_size)
+    csr = x509_utils.generate_ca_csr(
+        body.name, key, path_length=body.path_length, name_constraints=body.constraints()
+    )
+    return x509_utils.csr_to_pem(csr), x509_utils.key_to_pem(key)
+
+
+@router.post("/request-intermediate")
+async def request_intermediate(
+    body: IntermediateCsrRequest, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)
+):
+    """Generate an intermediate keypair here and a CSR to take to the offline
+    root. The CA is created in 'pending_signature' and cannot issue anything
+    until its signed certificate is imported."""
+    async with db.execute(
+        "SELECT * FROM certificate_authorities WHERE id = ?", (body.parent_ca_id,)
+    ) as cur:
+        parent = await cur.fetchone()
+    if not parent:
+        raise HTTPException(404, "Parent CA not found")
+
+    csr_pem, key_pem = await asyncio.to_thread(_generate_intermediate_csr_sync, body)
+    constraints = body.constraints()
+
+    cur = await db.execute(
+        """INSERT INTO certificate_authorities
+           (name, ca_type, parent_ca_id, subject, cert_pem, private_key_enc,
+            key_algorithm, key_size, signature_algorithm, not_before, not_after,
+            status, source, key_storage, csr_pem, path_length, name_constraints_json)
+           VALUES (?, 'intermediate', ?, ?, '', ?, ?, ?, 'sha256', '', '',
+                   'pending_signature', 'generated', 'local', ?, ?, ?) RETURNING *""",
+        (body.name, body.parent_ca_id, f"CN={body.name}", encrypt_str(key_pem),
+         body.key_algorithm, body.key_size, csr_pem, body.path_length,
+         json.dumps(constraints) if any(constraints.values()) else None),
+    )
+    row = await cur.fetchone()
+    await db.execute(
+        "INSERT INTO cert_events (ca_id, event_type, message) VALUES (?, 'csr_generated', ?)",
+        (row["id"], f"Intermediate CSR generated for '{body.name}' — awaiting signature by '{parent['name']}'"),
+    )
+    await db.commit()
+    return {**_ca_out(row), "csr_pem": csr_pem}
+
+
+@router.get("/{ca_id}/csr")
+async def get_ca_csr(ca_id: int, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)):
+    """Re-download a pending intermediate's CSR. The trip to an offline
+    machine is rarely done in one sitting, and regenerating would produce a
+    different key."""
+    async with db.execute(
+        "SELECT name, csr_pem, status FROM certificate_authorities WHERE id = ?", (ca_id,)
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "CA not found")
+    if not row["csr_pem"]:
+        raise HTTPException(404, "This CA has no pending CSR")
+    return {"name": row["name"], "csr_pem": row["csr_pem"], "status": row["status"]}
+
+
+class SignedCertImportRequest(BaseModel):
+    cert_pem: str
+
+
+@router.post("/{ca_id}/import-signed-cert")
+async def import_signed_certificate(
+    ca_id: int, body: SignedCertImportRequest, user: AdminUser,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Take back the intermediate certificate signed by the offline root and
+    activate the CA.
+
+    Everything is checked before activation. A certificate that doesn't match
+    the key held here, or wasn't signed by the parent it claims, would produce
+    an intermediate whose every issued certificate fails at the relying party
+    — a failure that surfaces far from this mistake and is miserable to trace.
+    """
+    async with db.execute("SELECT * FROM certificate_authorities WHERE id = ?", (ca_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "CA not found")
+    if row["status"] != "pending_signature":
+        raise HTTPException(400, f"This CA is not awaiting a signed certificate (status: {row['status']})")
+
+    try:
+        cert = x509_utils.cert_from_pem(body.cert_pem)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid certificate: {e}")
+
+    key = x509_utils.key_from_pem(decrypt_str(row["private_key_enc"]))
+    if not x509_utils.key_matches_certificate(key, cert):
+        raise HTTPException(
+            400,
+            "This certificate does not match the private key pktCert generated for this CA. "
+            "It was signed from a different CSR — re-download this CA's CSR and sign that one.",
+        )
+
+    problems = x509_utils.certificate_ca_problems(cert)
+    if problems:
+        raise HTTPException(
+            400,
+            "The signed certificate is not usable as a CA: " + "; ".join(problems)
+            + ". Whoever signed it left out the CA extensions.",
+        )
+
+    if row["parent_ca_id"]:
+        async with db.execute(
+            "SELECT name, cert_pem FROM certificate_authorities WHERE id = ?", (row["parent_ca_id"],)
+        ) as cur:
+            parent = await cur.fetchone()
+        if parent and parent["cert_pem"]:
+            parent_cert = x509_utils.cert_from_pem(parent["cert_pem"])
+            if cert.issuer != parent_cert.subject:
+                raise HTTPException(
+                    400,
+                    f"This certificate was issued by '{cert.issuer.rfc4514_string()}', not by the "
+                    f"expected parent '{parent_cert.subject.rfc4514_string()}'.",
+                )
+            if not x509_utils.verify_certificate_signed_by(cert, parent_cert):
+                raise HTTPException(
+                    400,
+                    "The signature on this certificate does not verify against the parent CA's key. "
+                    "It names the right issuer but was not signed by it.",
+                )
+
+    info = x509_utils.parse_certificate(body.cert_pem)
+    path_length, constraints = x509_utils.certificate_constraints(cert)
+    await db.execute(
+        """UPDATE certificate_authorities
+           SET cert_pem = ?, subject = ?, signature_algorithm = ?, not_before = ?, not_after = ?,
+               status = 'active', csr_pem = NULL, path_length = ?, name_constraints_json = ?
+           WHERE id = ?""",
+        (body.cert_pem, info["subject"], info["signature_algorithm"], info["not_before"],
+         info["not_after"], path_length, json.dumps(constraints) if constraints else None, ca_id),
+    )
+    await db.execute(
+        "INSERT INTO cert_events (ca_id, event_type, message) VALUES (?, 'issued', ?)",
+        (ca_id, f"Signed certificate imported for '{row['name']}' — CA is now active"),
+    )
+    await db.commit()
+    async with db.execute("SELECT * FROM certificate_authorities WHERE id = ?", (ca_id,)) as cur:
+        return _ca_out(await cur.fetchone())
+
+
+class CrlUploadRequest(BaseModel):
+    crl_pem: str
+
+
+@router.post("/{ca_id}/upload-crl")
+async def upload_crl(
+    ca_id: int, body: CrlUploadRequest, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)
+):
+    """Publish a CRL that was signed elsewhere.
+
+    An offline CA cannot sign its own CRL here — it holds no key here, which
+    is the whole point. So revocations under an offline root are published by
+    signing the CRL on the offline machine and uploading it, after which the
+    normal distribution point serves it like any other.
+    """
+    async with db.execute("SELECT * FROM certificate_authorities WHERE id = ?", (ca_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "CA not found")
+
+    try:
+        crl = x509_utils.crl_from_pem(body.crl_pem)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid CRL: {e}")
+
+    ca_cert = x509_utils.cert_from_pem(row["cert_pem"])
+    if crl.issuer != ca_cert.subject:
+        raise HTTPException(
+            400,
+            f"This CRL was issued by '{crl.issuer.rfc4514_string()}', not by this CA "
+            f"('{ca_cert.subject.rfc4514_string()}').",
+        )
+    if not crl.is_signature_valid(ca_cert.public_key()):
+        raise HTTPException(400, "The CRL's signature does not verify against this CA's certificate")
+
+    await db.execute(
+        "UPDATE certificate_authorities SET uploaded_crl_pem = ? WHERE id = ?", (body.crl_pem, ca_id)
+    )
+    await db.execute(
+        "INSERT INTO cert_events (ca_id, event_type, message) VALUES (?, 'crl_uploaded', ?)",
+        (ca_id, f"Externally-signed CRL uploaded for '{row['name']}' by {user['username']}"),
+    )
+    await db.commit()
+    return {
+        "status": "ok",
+        "this_update": crl.last_update_utc.isoformat(),
+        "next_update": crl.next_update_utc.isoformat() if crl.next_update_utc else None,
+        "revoked_count": len(crl),
+    }
+
+
 class CaStatusRequest(BaseModel):
     status: str  # active | disabled
 
@@ -324,7 +602,11 @@ async def get_crl(ca_id: int, user: AdminUser, db: aiosqlite.Connection = Depend
     if not ca_row:
         raise HTTPException(404, "CA not found")
 
-    published = await crl_manager.get_published_crl(db, ca_row)
+    try:
+        published = await crl_manager.get_published_crl(db, ca_row)
+    except crl_manager.OfflineCrlUnavailable as e:
+        # A configuration state, not a fault — say what to do about it.
+        raise HTTPException(409, str(e))
     return {
         "crl_pem": published["crl_pem"],
         "crl_number": published["crl_number"],

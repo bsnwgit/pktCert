@@ -376,6 +376,10 @@ python3 tests/test_approvals.py
 ```
 
 ```bash
+python3 tests/test_offline_root.py
+```
+
+```bash
 python3 tests/test_export_stepup.py
 ```
 
@@ -391,6 +395,8 @@ python3 tests/test_export_stepup.py
   encrypted keys) and disable-rather-than-delete retirement
 - **test_approvals** — separation of duties: off-by-default behaviour, the
   two-person rule, and that approval is what performs the operation
+- **test_offline_root** — the whole offline ceremony, with the root key held
+  only in the test and never given to the app
 - **test_export_stepup** — password re-entry before the backup bundle downloads
 
 ## Contributing
@@ -401,8 +407,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - No ACME protocol server (RFC 8555) — issuance is UI/API-driven only.
 - No OCSP responder — revocation status is only available via CRL.
-- CA private keys are encrypted at rest with a key in `config.yaml` on the
-  same host; no PKCS#11/HSM support and no offline-root workflow.
+- CA private keys for online CAs are encrypted at rest with a key in
+  `config.yaml` on the same host; no PKCS#11/HSM support. An offline root
+  (key held outside pktCert entirely) is supported — see the PKI reference.
 - No hardware-backed key storage; see PKCS#11/HSM below.
 - The audit trail (`cert_events`) is ordinary mutable rows, not tamper-evident,
   and has no SIEM/syslog export.

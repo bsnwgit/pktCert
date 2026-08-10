@@ -315,6 +315,71 @@ def build_ca_certificate(
     return builder.sign(signing_key, hashes.SHA256())
 
 
+def generate_ca_csr(
+    name: str,
+    key,
+    path_length: Optional[int] = 0,
+    name_constraints: Optional[dict] = None,
+) -> x509.CertificateSigningRequest:
+    """Build a CSR for an intermediate CA, to be signed out-of-band by an
+    offline root.
+
+    The requested extensions are included in the CSR. A signing CA is free to
+    ignore them — it is the signer, not the requester, that decides what a
+    certificate says — but stating them means the operator at the offline
+    machine can copy the intended constraints rather than reconstruct them
+    from memory, which is where path-length and name-constraint mistakes
+    creep in.
+    """
+    builder = x509.CertificateSigningRequestBuilder().subject_name(
+        x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+    ).add_extension(
+        x509.BasicConstraints(ca=True, path_length=path_length), critical=True
+    ).add_extension(
+        x509.KeyUsage(
+            digital_signature=False, content_commitment=False, key_encipherment=False,
+            data_encipherment=False, key_agreement=False, key_cert_sign=True, crl_sign=True,
+            encipher_only=False, decipher_only=False,
+        ),
+        critical=True,
+    )
+    if name_constraints:
+        nc = _build_name_constraints(name_constraints)
+        if nc is not None:
+            builder = builder.add_extension(nc, critical=True)
+    return builder.sign(key, hashes.SHA256())
+
+
+def verify_certificate_signed_by(child: x509.Certificate, issuer: x509.Certificate) -> bool:
+    """Was `child` actually signed by `issuer`'s key?
+
+    Used when a signed intermediate comes back from an offline root: without
+    this, a certificate signed by the wrong CA (or a typo'd copy-paste from
+    another machine) is accepted and every certificate issued beneath it fails
+    verification at the relying party, far from the mistake."""
+    try:
+        issuer.public_key().verify(
+            child.signature,
+            child.tbs_certificate_bytes,
+            *_verify_args(child, issuer.public_key()),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _verify_args(child: x509.Certificate, issuer_public_key):
+    """Signature-verification arguments differ by key type: RSA needs a
+    padding, EC needs an ECDSA wrapper, Ed25519 takes neither."""
+    from cryptography.hazmat.primitives.asymmetric import padding as _padding
+
+    if isinstance(issuer_public_key, rsa.RSAPublicKey):
+        return (_padding.PKCS1v15(), child.signature_hash_algorithm)
+    if isinstance(issuer_public_key, ec.EllipticCurvePublicKey):
+        return (ec.ECDSA(child.signature_hash_algorithm),)
+    return ()
+
+
 def generate_csr(common_name: str, sans: list[str], key) -> x509.CertificateSigningRequest:
     builder = x509.CertificateSigningRequestBuilder().subject_name(
         x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])

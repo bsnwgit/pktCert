@@ -106,6 +106,63 @@ store. It serves DER (`application/pkix-cert`), which is what Windows, macOS
 and OpenSSL fetch; `?format=pem` returns PEM for humans copying it into a
 config file.
 
+## Offline root
+
+A root CA is the one key that should never sit on a network-facing service.
+It can't be rotated quickly — it's installed in the trust store of every
+machine that trusts you — so a server compromise that reaches it is close to
+unrecoverable.
+
+pktCert supports keeping it out entirely. It holds the root **certificate**
+only; the private key stays on a machine that never touches the network (or a
+USB stick in a safe). Day-to-day issuance runs off an intermediate, so a
+compromise of this server costs an intermediate you can revoke rather than the
+root everybody trusts.
+
+The ceremony, in three moves:
+
+1. **Register the root** — `POST /api/cas/import-root-cert`, or
+   Certificate Authorities → Add CA → **Offline Root**. Certificate only, no
+   key. `key_storage` is recorded as `offline`.
+2. **Request an intermediate** — `POST /api/cas/request-intermediate`.
+   pktCert generates the intermediate keypair *here* and produces a CSR. The
+   CA is created in status `pending_signature` and can issue nothing. Only the
+   CSR travels; the private key never leaves. The CSR states the intended
+   BasicConstraints/KeyUsage/NameConstraints so the operator at the offline
+   machine can copy the intended limits rather than reconstruct them.
+3. **Bring back the signed certificate** — `POST /api/cas/{id}/import-signed-cert`.
+
+That last step is checked before anything is stored, because a mistake there
+surfaces far away — at every relying party, not here:
+
+- the certificate must match the private key pktCert generated
+- it must be a CA certificate (`BasicConstraints(ca=True)`, `keyCertSign`)
+- its issuer must be the expected parent, **and** its signature must actually
+  verify against that parent's key — a certificate can name the right issuer
+  without having been signed by it
+
+The CSR can be re-downloaded (`GET /api/cas/{id}/csr`) for as long as the CA
+is pending. The round trip to an air-gapped machine is rarely done in one
+sitting, and regenerating the CSR would produce a different key.
+
+### What an offline CA cannot do
+
+It cannot sign. That includes signing its own CRL — which is the point, not an
+oversight. So revocations under an offline root are published by signing the
+CRL on the machine that holds the key and uploading it
+(`POST /api/cas/{id}/upload-crl`, or **Publish CRL** in the UI). The upload is
+verified to have been issued by that CA and to carry a signature that verifies
+against its certificate, then served at the CA's normal distribution point
+like any other.
+
+Until a CRL has been uploaded, the admin route returns 409 with an
+explanation, and the public distribution point returns 404 — to a relying
+party that is simply "no CRL published here".
+
+Attempting to issue from an offline CA, or from an intermediate still awaiting
+its signature, is refused with a message saying which case applies. The
+auto-renewal loop skips both.
+
 ## Issuance Templates
 
 A template (`cert_templates` table) is a reusable signing profile:
