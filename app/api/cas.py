@@ -154,7 +154,11 @@ async def delete_ca(ca_id: int, user: AdminUser, db: aiosqlite.Connection = Depe
     await db.commit()
 
 
-def _build_crl_sync(ca_row: dict, revoked: list[dict]) -> str:
+def build_crl_sync(ca_row: dict, revoked: list[dict], crl_number: int) -> str:
+    """Shared by this module's authenticated PEM/JSON endpoint (below) and
+    app/api/crl.py's unauthenticated DER endpoint referenced by issued
+    certs' CRL Distribution Point extension — one CRL-assembly path for
+    both, so they never drift."""
     ca_cert = x509_utils.cert_from_pem(ca_row["cert_pem"])
     ca_key = x509_utils.key_from_pem(decrypt_str(ca_row["private_key_enc"]))
     entries = [
@@ -165,7 +169,7 @@ def _build_crl_sync(ca_row: dict, revoked: list[dict]) -> str:
         }
         for r in revoked if r["serial_number"]
     ]
-    return x509_utils.build_crl(ca_cert, ca_key, entries, ca_row["crl_number"] + 1)
+    return x509_utils.build_crl(ca_cert, ca_key, entries, crl_number)
 
 
 @router.get("/{ca_id}/crl")
@@ -180,7 +184,7 @@ async def get_crl(ca_id: int, user: AdminUser, db: aiosqlite.Connection = Depend
     ) as cur:
         revoked = await cur.fetchall()
 
-    crl_pem = await asyncio.to_thread(_build_crl_sync, dict(ca_row), [dict(r) for r in revoked])
+    crl_pem = await asyncio.to_thread(build_crl_sync, dict(ca_row), [dict(r) for r in revoked], ca_row["crl_number"] + 1)
     await db.execute(
         "UPDATE certificate_authorities SET crl_number = crl_number + 1 WHERE id = ?", (ca_id,)
     )
