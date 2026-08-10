@@ -47,6 +47,7 @@ def _cert_out(r) -> dict:
         "key_encrypted": bool(r["key_encrypted"]) if "key_encrypted" in r.keys() else False,
         "first_seen_at": r["first_seen_at"], "last_seen_at": r["last_seen_at"],
         "revoked_at": r["revoked_at"], "revoked_reason": r["revoked_reason"], "created_at": r["created_at"],
+        "revoked_reason_code": r["revoked_reason_code"] if "revoked_reason_code" in r.keys() else None,
         # Renewal chain (migration 008). Guarded with a key check so this keeps
         # working against a row read before the migration applied.
         "renewed_from_id": r["renewed_from_id"] if "renewed_from_id" in r.keys() else None,
@@ -289,7 +290,7 @@ class CsrSignRequest(BaseModel):
     template_id: int
 
 
-def _sign_csr_sync(ca_row: dict, template_row: dict, csr_pem: str, crl_url: str) -> str:
+def _sign_csr_sync(ca_row: dict, template_row: dict, csr_pem: str, crl_url: str, aia_url: str) -> str:
     ca_cert = x509_utils.cert_from_pem(ca_row["cert_pem"])
     ca_key = x509_utils.key_from_pem(decrypt_str(ca_row["private_key_enc"]))
     csr = x509_utils.csr_from_pem(csr_pem)
@@ -308,6 +309,7 @@ def _sign_csr_sync(ca_row: dict, template_row: dict, csr_pem: str, crl_url: str)
         key_usage=json.loads(template_row["key_usage_json"]),
         extended_key_usage=json.loads(template_row["extended_key_usage_json"]),
         crl_url=crl_url,
+        aia_url=aia_url,
     )
     return x509_utils.cert_to_pem(cert)
 
@@ -328,12 +330,13 @@ async def sign_csr(body: CsrSignRequest, user: AdminUser, db: aiosqlite.Connecti
     # Same CRL Distribution Point the /issue path stamps on. Without it a
     # CSR-signed certificate can be revoked here and no relying party can
     # ever discover that — the revocation would live only in this database.
-    crl_base_url = await issuance.get_crl_base_url(db)
-    crl_url = f"{crl_base_url}/crl/{body.ca_id}.crl"
+    base_url = await issuance.get_crl_base_url(db)
+    crl_url = f"{base_url}/crl/{body.ca_id}.crl"
+    aia_url = f"{base_url}/aia/{body.ca_id}.crt"
 
     try:
         cert_pem = await asyncio.to_thread(
-            _sign_csr_sync, dict(ca_row), dict(template_row), body.csr_pem, crl_url
+            _sign_csr_sync, dict(ca_row), dict(template_row), body.csr_pem, crl_url, aia_url
         )
     except Exception as e:
         raise HTTPException(400, f"Failed to sign CSR: {e}")
@@ -465,21 +468,33 @@ async def set_auto_renew(
 
 class RevokeRequest(BaseModel):
     reason: str = ""
+    # RFC 5280 reasonCode, published in the CRL entry so relying parties can
+    # tell a compromised key from a routine replacement. The free-text `reason`
+    # above stays a human note and never leaves this database.
+    reason_code: str = "unspecified"
 
 
 @router.post("/{cert_id}/revoke")
 async def revoke_certificate(cert_id: int, body: RevokeRequest, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)):
+    if body.reason_code not in x509_utils.REASON_CODES:
+        raise HTTPException(
+            400,
+            f"reason_code must be one of: {', '.join(sorted(x509_utils.REASON_CODES))}",
+        )
+
     async with db.execute("SELECT * FROM certificates WHERE id = ?", (cert_id,)) as cur:
         row = await cur.fetchone()
     if not row:
         raise HTTPException(404, "Certificate not found")
     await db.execute(
-        "UPDATE certificates SET status = 'revoked', revoked_at = datetime('now'), revoked_reason = ? WHERE id = ?",
-        (body.reason or None, cert_id),
+        """UPDATE certificates SET status = 'revoked', revoked_at = datetime('now'),
+           revoked_reason = ?, revoked_reason_code = ? WHERE id = ?""",
+        (body.reason or None, body.reason_code, cert_id),
     )
     await db.execute(
         "INSERT INTO cert_events (certificate_id, ca_id, event_type, message) VALUES (?, ?, 'revoked', ?)",
-        (cert_id, row["ca_id"], f"Revoked: {body.reason or 'no reason given'}"),
+        (cert_id, row["ca_id"],
+         f"Revoked ({body.reason_code}): {body.reason or 'no further detail'}"),
     )
     await db.commit()
-    return {"status": "ok"}
+    return {"status": "ok", "reason_code": body.reason_code}

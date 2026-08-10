@@ -37,6 +37,47 @@ operation, then discarded.
 issued certificates — revoke or let them expire first
 (`DELETE /api/cas/{id}` returns 400 with the count).
 
+### Constraints: path length and name constraints
+
+Two optional limits, both set when the CA is generated and both baked into
+the CA certificate itself, where a relying party enforces them — they cannot
+be changed afterwards without reissuing the CA.
+
+**Path length** caps how many further CAs may sit below this one. An
+intermediate defaults to `0`: it may issue end-entity certificates but not
+another CA. A root is unconstrained by default. Every CA used to be built
+with no limit at all, which made any intermediate capable of minting an
+unlimited chain of further sub-CAs — a stolen intermediate key was then as
+dangerous as the root.
+
+**Name constraints** limit what names a CA may certify at all. A CA
+constrained to `.corp.example.com` cannot mint a working certificate for
+anything outside it, even if its private key is stolen — a conforming client
+rejects the chain. This is the strongest containment available for an
+internal CA, and it's why an unconstrained CA in a trust store is effectively
+a CA for the entire internet. Set as permitted/excluded DNS suffixes and IP
+CIDR ranges, and marked critical: a client that can't understand the
+constraint must reject the chain rather than ignore the limit.
+
+## Chain building: the AIA endpoint
+
+Every certificate pktCert issues carries an Authority Information Access
+extension whose `caIssuers` URL points at `GET /aia/{ca_id}.crt`, and each
+intermediate points at its parent the same way.
+
+This matters more than it sounds. A TLS server that sends only its leaf
+certificate and no intermediates is extremely common. Without a `caIssuers`
+URL, a client holding that leaf has a certificate signed by an issuer it has
+no way to obtain, so chain building fails and the certificate looks broken
+even though everything about it is correct. AIA is how the client finds the
+missing link.
+
+The endpoint is unauthenticated for the same reason the CRL is: a CA
+certificate is public by definition — it's the thing you install in a trust
+store. It serves DER (`application/pkix-cert`), which is what Windows, macOS
+and OpenSSL fetch; `?format=pem` returns PEM for humans copying it into a
+config file.
+
 ## Issuance Templates
 
 A template (`cert_templates` table) is a reusable signing profile:
@@ -162,6 +203,18 @@ other stored key, and retrievable through the usual step-up re-auth.
 
 `POST /api/certificates/{id}/revoke` marks a certificate `revoked`
 (terminal — no un-revoke) and records a `cert_events` entry.
+
+Revocation takes an RFC 5280 **reason code** (`reason_code`) alongside the
+free-text note, and that code is published in the CRL entry. Relying parties
+act on it: `key_compromise` casts doubt on every signature that key ever
+made, while `superseded` or `cessation_of_operation` are routine lifecycle
+events. Publishing every revocation as an undifferentiated serial number
+throws that distinction away. The free-text `reason` stays an internal note
+and never leaves the database.
+
+`unspecified` deliberately emits no reasonCode extension at all — RFC 5280
+§5.3.1 says it SHOULD be absent rather than present-and-unspecified, since an
+explicit "unspecified" carries no more information than no extension.
 
 A CRL is **issued once and stored**, not rebuilt per request.
 `app/cert/crl_manager.py` owns that, and both CRL routes serve the same
