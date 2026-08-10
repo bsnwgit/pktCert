@@ -9,8 +9,6 @@ private_key_enc before returning a row.
 from __future__ import annotations
 
 import asyncio
-import json
-from datetime import datetime, timezone
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,7 +16,7 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.dependencies import AdminUser, CurrentUser
-from app.cert import x509_utils
+from app.cert import crl_manager, x509_utils
 from app.cert.crypto import decrypt_str, encrypt_str
 
 router = APIRouter()
@@ -154,39 +152,23 @@ async def delete_ca(ca_id: int, user: AdminUser, db: aiosqlite.Connection = Depe
     await db.commit()
 
 
-def build_crl_sync(ca_row: dict, revoked: list[dict], crl_number: int) -> str:
-    """Shared by this module's authenticated PEM/JSON endpoint (below) and
-    app/api/crl.py's unauthenticated DER endpoint referenced by issued
-    certs' CRL Distribution Point extension — one CRL-assembly path for
-    both, so they never drift."""
-    ca_cert = x509_utils.cert_from_pem(ca_row["cert_pem"])
-    ca_key = x509_utils.key_from_pem(decrypt_str(ca_row["private_key_enc"]))
-    entries = [
-        {
-            "serial_number": int(r["serial_number"], 16),
-            "revoked_at": datetime.fromisoformat(r["revoked_at"]).replace(tzinfo=timezone.utc)
-            if r["revoked_at"] and "+" not in r["revoked_at"] else datetime.now(timezone.utc),
-        }
-        for r in revoked if r["serial_number"]
-    ]
-    return x509_utils.build_crl(ca_cert, ca_key, entries, crl_number)
-
-
 @router.get("/{ca_id}/crl")
 async def get_crl(ca_id: int, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)):
+    """Admin view of the CA's current CRL. Serves exactly the same published
+    artifact as the public distribution point (GET /crl/{ca_id}.crl) — see
+    app/cert/crl_manager.py. This route used to sign its own copy and
+    increment the CA's counter on every view, which meant simply *looking* at
+    the CRL here published a number the public DP would later reuse for
+    different content."""
     async with db.execute("SELECT * FROM certificate_authorities WHERE id = ?", (ca_id,)) as cur:
         ca_row = await cur.fetchone()
     if not ca_row:
         raise HTTPException(404, "CA not found")
 
-    async with db.execute(
-        "SELECT serial_number, revoked_at FROM certificates WHERE ca_id = ? AND status = 'revoked'", (ca_id,)
-    ) as cur:
-        revoked = await cur.fetchall()
-
-    crl_pem = await asyncio.to_thread(build_crl_sync, dict(ca_row), [dict(r) for r in revoked], ca_row["crl_number"] + 1)
-    await db.execute(
-        "UPDATE certificate_authorities SET crl_number = crl_number + 1 WHERE id = ?", (ca_id,)
-    )
-    await db.commit()
-    return {"crl_pem": crl_pem}
+    published = await crl_manager.get_published_crl(db, ca_row)
+    return {
+        "crl_pem": published["crl_pem"],
+        "crl_number": published["crl_number"],
+        "this_update": published["this_update"],
+        "next_update": published["next_update"],
+    }

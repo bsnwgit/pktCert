@@ -154,7 +154,9 @@ export default function CertificateAuthorities() {
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
   const [expanded, setExpanded] = useState<number | null>(null)
-  const [crl, setCrl] = useState<{ id: number; text: string } | null>(null)
+  const [crl, setCrl] = useState<
+    { id: number; text: string; number: number; issued: string; expires: string } | null
+  >(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -175,7 +177,7 @@ export default function CertificateAuthorities() {
 
   const handleCrl = async (ca: CertificateAuthority) => {
     const r = await api.getCrl(ca.id)
-    setCrl({ id: ca.id, text: r.crl_pem })
+    setCrl({ id: ca.id, text: r.crl_pem, number: r.crl_number, issued: r.this_update, expires: r.next_update })
   }
 
   const rootCas = cas.filter(c => c.ca_type === 'root')
@@ -257,6 +259,16 @@ export default function CertificateAuthorities() {
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-lg font-semibold text-white">Certificate Revocation List</h3>
               <button onClick={() => copyToClipboard(crl.text)} className="text-xs text-sky-400 hover:text-sky-300">Copy</button>
+            </div>
+            {/* The CRL number and validity window are encoded inside the PEM
+                below, where nobody can read them. Surface them here — the
+                number is how a relying party tells one published CRL from
+                another, and "Valid until" is when clients start rejecting
+                this copy as stale. */}
+            <div className="flex flex-wrap gap-x-5 gap-y-1 mb-3 text-xs text-white">
+              <span>CRL Number <span className="font-mono text-sky-300">{crl.number}</span></span>
+              <span>Issued <span className="text-sky-300">{fmtDate(crl.issued)}</span></span>
+              <span>Valid until <span className="text-sky-300">{fmtDate(crl.expires)}</span></span>
             </div>
             <textarea readOnly value={crl.text} rows={10} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-white resize-none" />
             <button onClick={() => setCrl(null)} className="w-full mt-4 px-4 py-2 text-sm border border-gray-700 hover:border-gray-500 text-white rounded-lg transition-colors">Close</button>

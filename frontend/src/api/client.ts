@@ -174,7 +174,8 @@ export const api = {
   importCa: (body: { name: string; cert_pem: string; private_key_pem: string; ca_type: string; parent_ca_id?: number | null }) =>
     request<CertificateAuthority>('/cas/import', { method: 'POST', body: JSON.stringify(body) }),
   deleteCa: (id: number) => request(`/cas/${id}`, { method: 'DELETE' }),
-  getCrl: (id: number) => request<{ crl_pem: string }>(`/cas/${id}/crl`),
+  getCrl: (id: number) =>
+    request<{ crl_pem: string; crl_number: number; this_update: string; next_update: string }>(`/cas/${id}/crl`),
 
   // -- Templates ---------------------------------------------------------------------
   getTemplates: () => request<CertTemplate[]>('/templates'),
