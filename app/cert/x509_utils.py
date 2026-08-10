@@ -81,8 +81,94 @@ def key_to_pem(key, passphrase: Optional[str] = None) -> str:
     ).decode()
 
 
-def key_from_pem(pem: str):
-    return serialization.load_pem_private_key(pem.encode(), password=None)
+def key_from_pem(pem: str, passphrase: Optional[str] = None):
+    """Load a PKCS#8/PKCS#1 private key PEM. `passphrase` is required for a
+    key that was exported encrypted — which is how any properly stored CA key
+    is kept, so importing one was previously impossible."""
+    return serialization.load_pem_private_key(
+        pem.encode(), password=passphrase.encode("utf-8") if passphrase else None
+    )
+
+
+def key_matches_certificate(key, cert: x509.Certificate) -> bool:
+    """Does this private key actually belong to this certificate?
+
+    Nothing else checks it: a CA imported with a mismatched key is accepted
+    happily and then fails at the first signing attempt, or worse, produces
+    certificates that no client can verify against the CA everyone trusts.
+    Compares public numbers rather than serialised bytes so encoding
+    differences don't read as a mismatch."""
+    try:
+        return key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ) == cert.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    except Exception:
+        return False
+
+
+def certificate_ca_problems(cert: x509.Certificate) -> list[str]:
+    """Reasons this certificate can't act as a CA, empty if it can.
+
+    Importing a leaf certificate as a "CA" used to be accepted without
+    complaint. Every certificate it then issued would be rejected by any
+    conforming client — the failure surfaces far away from the mistake, at
+    every relying party rather than here."""
+    problems: list[str] = []
+    try:
+        bc = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        if not bc.ca:
+            problems.append("BasicConstraints says this is not a CA certificate (ca=False)")
+    except x509.ExtensionNotFound:
+        problems.append("no BasicConstraints extension — a CA certificate must assert ca=True")
+
+    try:
+        ku = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+        if not ku.key_cert_sign:
+            problems.append("KeyUsage does not include keyCertSign, so it may not sign certificates")
+    except x509.ExtensionNotFound:
+        # KeyUsage is optional in X.509; absent means unrestricted, so this is
+        # unusual for a CA but not itself invalid.
+        pass
+
+    return problems
+
+
+def certificate_constraints(cert: x509.Certificate) -> tuple[Optional[int], Optional[dict]]:
+    """Read back the path length and name constraints an existing CA carries,
+    so an imported CA displays the same constraint information as a generated
+    one instead of looking unconstrained."""
+    path_length = None
+    try:
+        path_length = cert.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length
+    except x509.ExtensionNotFound:
+        pass
+
+    constraints = None
+    try:
+        nc = cert.extensions.get_extension_for_class(x509.NameConstraints).value
+    except x509.ExtensionNotFound:
+        return path_length, None
+
+    def _split(subtrees) -> tuple[list[str], list[str]]:
+        dns, ips = [], []
+        for entry in subtrees or []:
+            if isinstance(entry, x509.DNSName):
+                dns.append(entry.value)
+            elif isinstance(entry, x509.IPAddress):
+                ips.append(str(entry.value))
+        return dns, ips
+
+    permitted_dns, permitted_ip = _split(nc.permitted_subtrees)
+    excluded_dns, excluded_ip = _split(nc.excluded_subtrees)
+    constraints = {
+        "permitted_dns": permitted_dns, "excluded_dns": excluded_dns,
+        "permitted_ip": permitted_ip, "excluded_ip": excluded_ip,
+    }
+    return path_length, constraints
 
 
 def cert_to_pem(cert: x509.Certificate) -> str:

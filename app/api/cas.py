@@ -76,6 +76,9 @@ class CaImportRequest(BaseModel):
     private_key_pem: str
     ca_type: str = "root"
     parent_ca_id: int | None = None
+    # Any properly stored CA key is exported passphrase-encrypted; without
+    # this there was no way to import one at all.
+    key_passphrase: str = ""
 
 
 @router.get("")
@@ -160,20 +163,72 @@ async def generate_ca(body: CaGenerateRequest, user: AdminUser, db: aiosqlite.Co
 
 @router.post("/import")
 async def import_ca(body: CaImportRequest, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)):
+    """Bring an existing CA under pktCert's management.
+
+    Validated properly now. Import previously accepted anything that parsed:
+    a leaf certificate imported as a "CA", or a certificate paired with
+    somebody else's private key, was stored without complaint and only failed
+    later — at signing time, or worse, at every relying party trying to verify
+    a certificate it had issued.
+    """
     try:
         cert = x509_utils.cert_from_pem(body.cert_pem)
-        key = x509_utils.key_from_pem(body.private_key_pem)
     except Exception as e:
-        raise HTTPException(400, f"Invalid certificate or private key: {e}")
+        raise HTTPException(400, f"Invalid certificate: {e}")
+
+    try:
+        key = x509_utils.key_from_pem(body.private_key_pem, body.key_passphrase or None)
+    except TypeError:
+        # cryptography raises TypeError specifically for "password given but
+        # key isn't encrypted" / "key is encrypted but no password given".
+        raise HTTPException(
+            400,
+            "This private key is passphrase-encrypted — supply key_passphrase "
+            "(or omit it if the key isn't encrypted)."
+            if not body.key_passphrase
+            else "This private key is not passphrase-encrypted — leave key_passphrase empty.",
+        )
+    except Exception as e:
+        raise HTTPException(400, f"Invalid private key: {e}")
+
+    if not x509_utils.key_matches_certificate(key, cert):
+        raise HTTPException(
+            400,
+            "The private key does not match this certificate — they are not a pair. "
+            "Importing them anyway would produce certificates nothing can verify.",
+        )
+
+    problems = x509_utils.certificate_ca_problems(cert)
+    if problems:
+        raise HTTPException(400, "This certificate cannot act as a CA: " + "; ".join(problems))
+
+    if body.ca_type == "intermediate" and body.parent_ca_id:
+        async with db.execute(
+            "SELECT id FROM certificate_authorities WHERE id = ?", (body.parent_ca_id,)
+        ) as cur:
+            if not await cur.fetchone():
+                raise HTTPException(404, "Parent CA not found")
 
     info = x509_utils.parse_certificate(body.cert_pem)
+    path_length, constraints = x509_utils.certificate_constraints(cert)
+
+    # Store the key in the canonical unencrypted PKCS#8 form. It is immediately
+    # Fernet-encrypted at rest either way, and normalising here means signing
+    # never has to rediscover the import passphrase — which pktCert does not
+    # keep, exactly as it doesn't keep an issued key's passphrase.
+    normalised_key_pem = x509_utils.key_to_pem(key)
+
     cur = await db.execute(
         """INSERT INTO certificate_authorities
            (name, ca_type, parent_ca_id, subject, cert_pem, private_key_enc,
-            key_algorithm, key_size, signature_algorithm, not_before, not_after, source)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'imported') RETURNING *""",
-        (body.name, body.ca_type, body.parent_ca_id, info["subject"], body.cert_pem, encrypt_str(body.private_key_pem),
-         info["key_algorithm"], info["key_size"], info["signature_algorithm"], info["not_before"], info["not_after"]),
+            key_algorithm, key_size, signature_algorithm, not_before, not_after, source,
+            path_length, name_constraints_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'imported', ?, ?) RETURNING *""",
+        (body.name, body.ca_type, body.parent_ca_id, info["subject"], body.cert_pem,
+         encrypt_str(normalised_key_pem),
+         info["key_algorithm"], info["key_size"], info["signature_algorithm"],
+         info["not_before"], info["not_after"],
+         path_length, json.dumps(constraints) if constraints else None),
     )
     row = await cur.fetchone()
     await db.execute(
@@ -184,14 +239,74 @@ async def import_ca(body: CaImportRequest, user: AdminUser, db: aiosqlite.Connec
     return _ca_out(row)
 
 
+class CaStatusRequest(BaseModel):
+    status: str  # active | disabled
+
+
+@router.patch("/{ca_id}/status")
+async def set_ca_status(
+    ca_id: int, body: CaStatusRequest, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)
+):
+    """Disable a CA (stops it issuing) or re-enable it.
+
+    This is what retiring a CA should look like. A disabled CA still exists,
+    still appears in the inventory, and — critically — still publishes its
+    CRL, because the certificates it already issued are still deployed and
+    still being validated by relying parties.
+    """
+    if body.status not in ("active", "disabled"):
+        raise HTTPException(400, "status must be 'active' or 'disabled'")
+
+    async with db.execute("SELECT * FROM certificate_authorities WHERE id = ?", (ca_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "CA not found")
+    if row["status"] not in ("active", "disabled"):
+        raise HTTPException(400, f"CA is {row['status']} and cannot be re-enabled")
+
+    await db.execute("UPDATE certificate_authorities SET status = ? WHERE id = ?", (body.status, ca_id))
+    await db.execute(
+        "INSERT INTO cert_events (ca_id, event_type, message) VALUES (?, 'ca_status', ?)",
+        (ca_id, f"CA '{row['name']}' {'disabled' if body.status == 'disabled' else 're-enabled'} by {user['username']}"),
+    )
+    await db.commit()
+    async with db.execute("SELECT * FROM certificate_authorities WHERE id = ?", (ca_id,)) as cur:
+        updated = await cur.fetchone()
+    return _ca_out(updated)
+
+
 @router.delete("/{ca_id}", status_code=204)
 async def delete_ca(ca_id: int, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)):
+    """Delete a CA that never issued anything.
+
+    Deletion used to be allowed once no *non-revoked* certificates remained —
+    which is precisely backwards. Revoked certificates are the ones that most
+    need their CA: deleting it destroys the only key that can sign the CRL
+    carrying their revocations, while those certificates are still deployed
+    and still trusted by everything holding them. It also cascaded away the
+    CA's entire audit history.
+
+    So a CA that has ever issued anything can only be disabled, never deleted.
+    """
     async with db.execute(
-        "SELECT COUNT(*) AS n FROM certificates WHERE ca_id = ? AND status != 'revoked'", (ca_id,)
+        "SELECT COUNT(*) AS n FROM certificates WHERE ca_id = ?", (ca_id,)
     ) as cur:
         row = await cur.fetchone()
     if row and row["n"] > 0:
-        raise HTTPException(400, f"CA has {row['n']} active issued certificate(s) — revoke or reassign them first")
+        raise HTTPException(
+            400,
+            f"This CA has issued {row['n']} certificate(s) and cannot be deleted — disable it instead. "
+            "Deleting it would destroy the key that signs its CRL, leaving every certificate it "
+            "issued unrevocable while they are still deployed and trusted.",
+        )
+
+    async with db.execute(
+        "SELECT COUNT(*) AS n FROM certificate_authorities WHERE parent_ca_id = ?", (ca_id,)
+    ) as cur:
+        children = await cur.fetchone()
+    if children and children["n"] > 0:
+        raise HTTPException(400, f"This CA has {children['n']} intermediate CA(s) beneath it — remove those first")
+
     await db.execute("DELETE FROM certificate_authorities WHERE id = ?", (ca_id,))
     await db.commit()
 

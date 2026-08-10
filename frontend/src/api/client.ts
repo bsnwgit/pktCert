@@ -185,8 +185,10 @@ export const api = {
     permitted_ip?: string[]; excluded_ip?: string[]
   }) =>
     request<CertificateAuthority>('/cas/generate', { method: 'POST', body: JSON.stringify(body) }),
-  importCa: (body: { name: string; cert_pem: string; private_key_pem: string; ca_type: string; parent_ca_id?: number | null }) =>
+  importCa: (body: { name: string; cert_pem: string; private_key_pem: string; ca_type: string; parent_ca_id?: number | null; key_passphrase?: string }) =>
     request<CertificateAuthority>('/cas/import', { method: 'POST', body: JSON.stringify(body) }),
+  setCaStatus: (id: number, status: 'active' | 'disabled') =>
+    request<CertificateAuthority>(`/cas/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
   deleteCa: (id: number) => request(`/cas/${id}`, { method: 'DELETE' }),
   getCrl: (id: number) =>
     request<{ crl_pem: string; crl_number: number; this_update: string; next_update: string }>(`/cas/${id}/crl`),
@@ -497,7 +499,7 @@ export interface CertificateAuthority {
   signature_algorithm: string
   not_before: string
   not_after: string
-  status: 'active' | 'expired' | 'revoked'
+  status: 'active' | 'disabled' | 'expired' | 'revoked'
   crl_number: number
   path_length: number | null
   name_constraints: {

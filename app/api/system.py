@@ -311,6 +311,26 @@ Generated: {ts}
 4. Copy config.yaml   →  {cfg.install_dir}/config.yaml
 5. Start the service:    sudo systemctl start pktcert
 
+## ⚠ THIS ARCHIVE IS KEY MATERIAL — HANDLE ACCORDINGLY
+
+pktcert.db holds every CA private key, encrypted with `credential_key`.
+config.yaml holds `credential_key`. This bundle deliberately contains both,
+because a restore is useless without them — but that means **anyone who
+obtains this file can decrypt and use your CA private keys**, and therefore
+issue certificates that every machine trusting your CAs will accept.
+
+Treat it exactly as you would the CA keys themselves:
+
+- Do not leave it in a Downloads folder, mail it, or put it in chat or a
+  ticket.
+- Move it to encrypted storage immediately, or split it: keep config.yaml
+  somewhere other than pktcert.db.
+- Delete it once the restore is done.
+
+The scheduled on-server backups under Settings → Data → Backups deliberately
+exclude config.yaml for this reason. This bundle does not, because it is
+meant to move a whole installation to a new host in one step.
+
 ## Notes
 - The JWT secret in config.yaml will invalidate existing browser sessions —
   users on the old server will need to log in again after restore.

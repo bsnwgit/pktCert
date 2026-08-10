@@ -7,6 +7,7 @@ import { downloadFile, safeFilename } from '../utils/download'
 
 const STATUS_STYLES: Record<string, string> = {
   active: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40',
+  disabled: 'bg-slate-500/20 text-slate-300 border border-slate-500/40',
   expired: 'bg-red-500/20 text-red-400 border border-red-500/40',
   revoked: 'bg-gray-500/20 text-gray-400 border border-gray-500/40',
 }
@@ -36,6 +37,7 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
   const [showConstraints, setShowConstraints] = useState(false)
   const [certPem, setCertPem] = useState('')
   const [privateKeyPem, setPrivateKeyPem] = useState('')
+  const [importPassphrase, setImportPassphrase] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -55,7 +57,11 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
           permitted_ip: list(permittedIp), excluded_ip: list(excludedIp),
         })
       } else {
-        await api.importCa({ name, cert_pem: certPem, private_key_pem: privateKeyPem, ca_type: caType, parent_ca_id: caType === 'intermediate' ? Number(parentCaId) : null })
+        await api.importCa({
+          name, cert_pem: certPem, private_key_pem: privateKeyPem, ca_type: caType,
+          parent_ca_id: caType === 'intermediate' ? Number(parentCaId) : null,
+          ...(importPassphrase ? { key_passphrase: importPassphrase } : {}),
+        })
       }
       onSaved()
       onClose()
@@ -188,6 +194,16 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
                 <textarea value={privateKeyPem} onChange={e => setPrivateKeyPem(e.target.value)} rows={5} placeholder="-----BEGIN PRIVATE KEY-----"
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-white resize-none focus:outline-none focus:ring-2 focus:ring-sky-500" />
               </div>
+              <div>
+                <label className="block text-xs text-white mb-1">Key passphrase (if the key is encrypted)</label>
+                <input type="password" value={importPassphrase} onChange={e => setImportPassphrase(e.target.value)}
+                  autoComplete="new-password" placeholder="Leave blank for an unencrypted key" className={inp} />
+                <p className="text-xs text-slate-400 mt-1">
+                  Needed for a key beginning <span className="font-mono">ENCRYPTED PRIVATE KEY</span>. pktCert
+                  decrypts it once on import and stores it under its own encryption at rest — the passphrase
+                  itself is not kept.
+                </p>
+              </div>
             </div>
           )}
 
@@ -223,8 +239,23 @@ export default function CertificateAuthorities() {
 
   useEffect(() => { load() }, [load])
 
+  const handleToggleStatus = async (ca: CertificateAuthority) => {
+    const next = ca.status === 'disabled' ? 'active' : 'disabled'
+    if (next === 'disabled' && !confirm(
+      `Disable CA "${ca.name}"?\n\n` +
+      'It will stop issuing new certificates. Everything it has already issued keeps working, ' +
+      'and its CRL keeps being published — so revocations still reach the clients that need them.'
+    )) return
+    try {
+      await api.setCaStatus(ca.id, next)
+      await load()
+    } catch (e: any) {
+      alert(e.message ?? 'Could not change CA status')
+    }
+  }
+
   const handleDelete = async (ca: CertificateAuthority) => {
-    if (!confirm(`Delete CA "${ca.name}"? This only works if it has no active issued certificates.`)) return
+    if (!confirm(`Delete CA "${ca.name}"? Only possible if it has never issued a certificate.`)) return
     try {
       await api.deleteCa(ca.id)
       await load()
@@ -248,7 +279,7 @@ export default function CertificateAuthorities() {
           <h1 className="text-xl font-bold text-white">Certificate Authorities</h1>
           <HelpButton title="Certificate Authorities — How It Works">
             <p>Generate a new root (self-signed) or intermediate (signed by a root you control) CA, or import an existing one. CA private keys are encrypted at rest and are never returned by the API — they're only used server-side to sign issued certificates and CRLs.</p>
-            <p>Deleting a CA is blocked while it still has active (non-revoked) issued certificates — revoke or let them expire first.</p>
+            <p><b>Disable</b> a CA to retire it: it stops issuing, but everything it already issued keeps working and its CRL keeps being published, so revocations still reach the clients that need them. That's almost always what you want.</p><p><b>Delete</b> only works on a CA that has never issued anything. Deleting one that has would destroy the key that signs its CRL, leaving every certificate it issued unrevocable while they're still deployed and trusted.</p><p>Constraints — path length and name constraints — are set when a CA is created and cannot be changed afterwards. A name-constrained CA cannot issue a working certificate outside its permitted domains even if its key is stolen.</p>
           </HelpButton>
         </div>
         {isAdmin && (
@@ -286,6 +317,11 @@ export default function CertificateAuthorities() {
                 <button onClick={() => copyToClipboard(ca.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Copy Cert</button>
                 <button onClick={() => downloadFile(`${safeFilename(ca.name)}.pem`, ca.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Download Cert</button>
                 <button onClick={() => handleCrl(ca)} className="text-xs text-sky-400 hover:text-sky-300">CRL</button>
+                {isAdmin && (
+                  <button onClick={() => handleToggleStatus(ca)} className="text-xs text-white hover:text-amber-300">
+                    {ca.status === 'disabled' ? 'Enable' : 'Disable'}
+                  </button>
+                )}
                 {isAdmin && <button onClick={() => handleDelete(ca)} className="text-xs text-white hover:text-red-400">Delete</button>}
               </div>
             </div>
@@ -305,6 +341,11 @@ export default function CertificateAuthorities() {
                       <button onClick={() => copyToClipboard(child.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Copy Cert</button>
                       <button onClick={() => downloadFile(`${safeFilename(child.name)}.pem`, child.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Download Cert</button>
                       <button onClick={() => handleCrl(child)} className="text-xs text-sky-400 hover:text-sky-300">CRL</button>
+                      {isAdmin && (
+                        <button onClick={() => handleToggleStatus(child)} className="text-xs text-white hover:text-amber-300">
+                          {child.status === 'disabled' ? 'Enable' : 'Disable'}
+                        </button>
+                      )}
                       {isAdmin && <button onClick={() => handleDelete(child)} className="text-xs text-white hover:text-red-400">Delete</button>}
                     </div>
                   </div>
