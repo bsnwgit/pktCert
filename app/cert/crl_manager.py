@@ -76,6 +76,9 @@ def revoked_fingerprint(revoked: list[dict]) -> str:
         h.update(b"|")
         h.update((r["serial_number"] or "").encode())
         h.update(str(r["revoked_at"] or "").encode())
+        # Covers the reason code as well — otherwise correcting a revocation
+        # reason would leave the published CRL saying the old thing forever.
+        h.update(str(r.get("revoked_reason_code") or "").encode())
     return h.hexdigest()
 
 
@@ -87,6 +90,7 @@ def build_crl_sync(ca_row: dict, revoked: list[dict], crl_number: int) -> str:
         {
             "serial_number": int(r["serial_number"], 16),
             "revoked_at": _parse_utc_ts(r["revoked_at"]),
+            "reason": r.get("revoked_reason_code"),
         }
         for r in revoked
         if r["serial_number"]
@@ -96,7 +100,8 @@ def build_crl_sync(ca_row: dict, revoked: list[dict], crl_number: int) -> str:
 
 async def _fetch_revoked(db: aiosqlite.Connection, ca_id: int) -> list[dict]:
     async with db.execute(
-        "SELECT serial_number, revoked_at FROM certificates WHERE ca_id = ? AND status = 'revoked'",
+        """SELECT serial_number, revoked_at, revoked_reason_code FROM certificates
+           WHERE ca_id = ? AND status = 'revoked'""",
         (ca_id,),
     ) as cur:
         return [dict(r) for r in await cur.fetchall()]

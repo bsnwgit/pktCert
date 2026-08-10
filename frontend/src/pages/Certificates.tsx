@@ -18,6 +18,20 @@ const STATUS_STYLES: Record<string, string> = {
   unknown: 'bg-sky-500/20 text-sky-400 border border-sky-500/40',
 }
 
+// RFC 5280 §5.3.1 reasonCode values, published in the CRL entry. Ordered by
+// how often they're actually the right answer, not by their numeric code.
+const REVOCATION_REASONS: { value: string; label: string }[] = [
+  { value: 'unspecified', label: 'Unspecified' },
+  { value: 'superseded', label: 'Superseded — replaced by another certificate' },
+  { value: 'cessation_of_operation', label: 'Cessation of operation — service retired' },
+  { value: 'key_compromise', label: 'Key compromise — the private key was exposed' },
+  { value: 'affiliation_changed', label: 'Affiliation changed — subject details no longer correct' },
+  { value: 'privilege_withdrawn', label: 'Privilege withdrawn — no longer authorised' },
+  { value: 'ca_compromise', label: 'CA compromise — the issuing CA key was exposed' },
+  { value: 'certificate_hold', label: 'Certificate hold — temporarily suspended' },
+  { value: 'aa_compromise', label: 'AA compromise — attribute authority exposed' },
+]
+
 const PAGE_SIZE = 25
 
 function fmtDate(ts: string | null): string {
@@ -200,6 +214,7 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
   const [pending, setPending] = useState<PendingAction | null>(null)
   const [revoking, setRevoking] = useState(false)
   const [reason, setReason] = useState('')
+  const [reasonCode, setReasonCode] = useState('unspecified')
   const [renewing, setRenewing] = useState(false)
   const [renewedKey, setRenewedKey] = useState<{ id: number; pem?: string } | null>(null)
   const [autoRenew, setAutoRenew] = useState(cert.auto_renew)
@@ -282,7 +297,7 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
     if (!confirm(`Revoke certificate '${cert.common_name}'? This cannot be undone.`)) return
     setRevoking(true)
     try {
-      await api.revokeCertificate(cert.id, reason)
+      await api.revokeCertificate(cert.id, reason, reasonCode)
       onChanged()
       onClose()
     } finally {
@@ -312,7 +327,11 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
           {cert.host && <div><span className="text-white">Host</span><p className="text-white font-mono">{cert.host}:{cert.port}</p></div>}
           <div className="col-span-2"><span className="text-white">Fingerprint (SHA-256)</span><p className="text-white text-xs font-mono break-all">{cert.fingerprint_sha256}</p></div>
           {cert.revoked_at && (
-            <div className="col-span-2"><span className="text-red-400">Revoked</span><p className="text-white text-xs">{fmtDate(cert.revoked_at)} — {cert.revoked_reason || 'no reason given'}</p></div>
+            <div className="col-span-2"><span className="text-red-400">Revoked</span><p className="text-white text-xs">
+              {fmtDate(cert.revoked_at)}
+              {cert.revoked_reason_code ? ` — ${REVOCATION_REASONS.find(r => r.value === cert.revoked_reason_code)?.label ?? cert.revoked_reason_code}` : ''}
+              {cert.revoked_reason ? ` (${cert.revoked_reason})` : ''}
+            </p></div>
           )}
           {cert.renewed_to_id && (
             <div className="col-span-2"><span className="text-white">Renewed</span><p className="text-white text-xs">Superseded by certificate #{cert.renewed_to_id} — still valid until it expires, and not revoked</p></div>
@@ -397,13 +416,27 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
         )}
 
         {isAdmin && cert.status !== 'revoked' && (
-          <div className="border-t border-gray-800 pt-4 flex items-center gap-2 flex-wrap">
-            <input value={reason} onChange={e => setReason(e.target.value)} placeholder="Revocation reason (optional)"
-              className="flex-1 min-w-[200px] bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" />
-            <button onClick={doRevoke} disabled={revoking}
-              className="text-sm bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg px-4 py-2 transition-colors">
-              {revoking ? 'Revoking…' : 'Revoke'}
-            </button>
+          <div className="border-t border-gray-800 pt-4 space-y-2">
+            <div>
+              <label className="block text-xs text-white mb-1">Revocation reason (published in the CRL)</label>
+              <select value={reasonCode} onChange={e => setReasonCode(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white">
+                {REVOCATION_REASONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
+              <p className="text-xs text-white/70 mt-1">
+                Relying parties act on this: <span className="text-amber-300">key compromise</span> casts doubt on
+                everything that key ever signed, while superseded or cessation of operation are routine. The note
+                below is for your own records and never leaves pktCert.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input value={reason} onChange={e => setReason(e.target.value)} placeholder="Internal note (optional)"
+                className="flex-1 min-w-[200px] bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" />
+              <button onClick={doRevoke} disabled={revoking}
+                className="text-sm bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg px-4 py-2 transition-colors">
+                {revoking ? 'Revoking…' : 'Revoke'}
+              </button>
+            </div>
           </div>
         )}
 

@@ -28,6 +28,12 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
   const [keyAlgorithm, setKeyAlgorithm] = useState('rsa')
   const [keySize, setKeySize] = useState(4096)
   const [validityDays, setValidityDays] = useState(3650)
+  const [pathLength, setPathLength] = useState('')
+  const [permittedDns, setPermittedDns] = useState('')
+  const [excludedDns, setExcludedDns] = useState('')
+  const [permittedIp, setPermittedIp] = useState('')
+  const [excludedIp, setExcludedIp] = useState('')
+  const [showConstraints, setShowConstraints] = useState(false)
   const [certPem, setCertPem] = useState('')
   const [privateKeyPem, setPrivateKeyPem] = useState('')
   const [saving, setSaving] = useState(false)
@@ -40,9 +46,13 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
     setError('')
     try {
       if (mode === 'generate') {
+        const list = (v: string) => v.split(',').map(x => x.trim()).filter(Boolean)
         await api.generateCa({
           name, ca_type: caType, parent_ca_id: caType === 'intermediate' ? Number(parentCaId) : null,
           key_algorithm: keyAlgorithm, key_size: keySize, validity_days: validityDays,
+          path_length: pathLength === '' ? null : Number(pathLength),
+          permitted_dns: list(permittedDns), excluded_dns: list(excludedDns),
+          permitted_ip: list(permittedIp), excluded_ip: list(excludedIp),
         })
       } else {
         await api.importCa({ name, cert_pem: certPem, private_key_pem: privateKeyPem, ca_type: caType, parent_ca_id: caType === 'intermediate' ? Number(parentCaId) : null })
@@ -116,6 +126,54 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
               <div className="col-span-2">
                 <label className="block text-xs text-white mb-1">Validity</label>
                 <ValidityInput days={validityDays} onChange={setValidityDays} className={inp} />
+              </div>
+
+              <div className="col-span-2 border-t border-gray-800 pt-3">
+                <button type="button" onClick={() => setShowConstraints(v => !v)}
+                  className="text-xs text-sky-400 hover:text-sky-300">
+                  {showConstraints ? '▾' : '▸'} Constraints (optional, recommended)
+                </button>
+                {showConstraints && (
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <label className="block text-xs text-white mb-1">Maximum CAs below this one (path length)</label>
+                      <input value={pathLength} onChange={e => setPathLength(e.target.value)} type="number" min={0} max={5}
+                        placeholder={caType === 'intermediate' ? '0 (default)' : 'unlimited (default)'} className={inp} />
+                      <p className="text-xs text-slate-400 mt-1">
+                        0 means this CA can issue certificates but cannot create another CA beneath it.
+                        Intermediates default to 0.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-white mb-1">Permitted DNS domains (comma-separated)</label>
+                      <input value={permittedDns} onChange={e => setPermittedDns(e.target.value)}
+                        placeholder=".corp.example.com, .internal.example.com" className={inp} />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-white mb-1">Excluded DNS domains</label>
+                      <input value={excludedDns} onChange={e => setExcludedDns(e.target.value)}
+                        placeholder=".public.example.com" className={inp} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-white mb-1">Permitted IP ranges</label>
+                        <input value={permittedIp} onChange={e => setPermittedIp(e.target.value)}
+                          placeholder="10.0.0.0/8" className={inp} />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-white mb-1">Excluded IP ranges</label>
+                        <input value={excludedIp} onChange={e => setExcludedIp(e.target.value)}
+                          placeholder="0.0.0.0/0" className={inp} />
+                      </div>
+                    </div>
+                    <p className="text-xs text-amber-300/90">
+                      Name constraints are the strongest containment available for an internal CA: one limited to
+                      .corp.example.com cannot mint a working certificate for anything else, even if its private key
+                      is stolen. They are baked into the CA certificate at creation and cannot be changed afterwards —
+                      set them now or reissue the CA later.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           ) : (
@@ -218,7 +276,11 @@ export default function CertificateAuthorities() {
                   <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${STATUS_STYLES[ca.status]}`}>{ca.status}</span>
                   <span className="text-xs text-white">root</span>
                 </div>
-                <p className="text-xs text-white mt-0.5">Expires {fmtDate(ca.not_after)} · {ca.key_algorithm.toUpperCase()} {ca.key_size} · {childrenOf(ca.id).length} intermediate(s)</p>
+                <p className="text-xs text-white mt-0.5">
+                  Expires {fmtDate(ca.not_after)} · {ca.key_algorithm.toUpperCase()} {ca.key_size} · {childrenOf(ca.id).length} intermediate(s)
+                  {ca.path_length !== null && <> · path len {ca.path_length}</>}
+                  {ca.name_constraints && <span className="text-emerald-400"> · name-constrained</span>}
+                </p>
               </div>
               <div className="flex items-center gap-3 shrink-0" onClick={e => e.stopPropagation()}>
                 <button onClick={() => copyToClipboard(ca.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Copy Cert</button>

@@ -39,6 +39,7 @@ from app.api import (
     widgets as widgets_router,
     docs as docs_router,
     crl as crl_router,
+    aia as aia_router,
 )
 
 settings = get_settings()
@@ -172,6 +173,10 @@ app.include_router(docs_router.router,      prefix="/api/docs-content", tags=["d
 # module docstring for why. Registered before the SPA catch-all below so
 # it takes priority over that route's broader "/{full_path:path}" pattern.
 app.include_router(crl_router.router,       prefix="/crl",              tags=["crl"])
+# Also deliberately outside /api and unauthenticated — a CA certificate is
+# public by definition (see app/api/aia.py). Registered before the SPA
+# catch-all so it wins over "/{full_path:path}".
+app.include_router(aia_router.router,       prefix="/aia",              tags=["aia"])
 
 # -- Health check ------------------------------------------------------------------
 

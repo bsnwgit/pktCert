@@ -148,8 +148,10 @@ export const api = {
     request<Certificate>(`/certificates/${id}/auto-renew`, {
       method: 'PATCH', body: JSON.stringify({ auto_renew, auto_renew_days }),
     }),
-  revokeCertificate: (id: number, reason: string) =>
-    request<{ status: string }>(`/certificates/${id}/revoke`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  revokeCertificate: (id: number, reason: string, reason_code = 'unspecified') =>
+    request<{ status: string; reason_code: string }>(`/certificates/${id}/revoke`, {
+      method: 'POST', body: JSON.stringify({ reason, reason_code }),
+    }),
   // Step-up re-auth: current password required to decrypt a stored private
   // key or install passcode. Every successful call is audit-logged server-side.
   revealCertificateSecret: (id: number, field: 'key' | 'passcode', password: string) =>
@@ -175,7 +177,13 @@ export const api = {
   // -- Certificate Authorities --------------------------------------------------------
   getCas: () => request<CertificateAuthority[]>('/cas'),
   getCa: (id: number) => request<CertificateAuthority>(`/cas/${id}`),
-  generateCa: (body: { name: string; ca_type: string; parent_ca_id?: number | null; key_algorithm: string; key_size: number; validity_days: number }) =>
+  generateCa: (body: {
+    name: string; ca_type: string; parent_ca_id?: number | null
+    key_algorithm: string; key_size: number; validity_days: number
+    path_length?: number | null
+    permitted_dns?: string[]; excluded_dns?: string[]
+    permitted_ip?: string[]; excluded_ip?: string[]
+  }) =>
     request<CertificateAuthority>('/cas/generate', { method: 'POST', body: JSON.stringify(body) }),
   importCa: (body: { name: string; cert_pem: string; private_key_pem: string; ca_type: string; parent_ca_id?: number | null }) =>
     request<CertificateAuthority>('/cas/import', { method: 'POST', body: JSON.stringify(body) }),
@@ -466,6 +474,7 @@ export interface Certificate {
   last_seen_at: string
   revoked_at: string | null
   revoked_reason: string | null
+  revoked_reason_code: string | null
   created_at: string
   renewed_from_id: number | null
   renewed_to_id: number | null
@@ -490,6 +499,11 @@ export interface CertificateAuthority {
   not_after: string
   status: 'active' | 'expired' | 'revoked'
   crl_number: number
+  path_length: number | null
+  name_constraints: {
+    permitted_dns: string[]; excluded_dns: string[]
+    permitted_ip: string[]; excluded_ip: string[]
+  } | null
   source: 'generated' | 'imported'
   created_at: string
 }

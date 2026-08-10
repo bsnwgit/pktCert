@@ -49,7 +49,7 @@ async def get_crl_base_url(db: aiosqlite.Connection) -> str:
 
 def _issue_sync(
     ca_row: dict, template_row: dict, common_name: str, sans: list[str],
-    crl_url: str, key_passphrase: str = "",
+    crl_url: str, aia_url: str, key_passphrase: str = "",
 ) -> tuple[str, str]:
     ca_cert = x509_utils.cert_from_pem(ca_row["cert_pem"])
     ca_key = x509_utils.key_from_pem(decrypt_str(ca_row["private_key_enc"]))
@@ -61,6 +61,7 @@ def _issue_sync(
         key_usage=json.loads(template_row["key_usage_json"]),
         extended_key_usage=json.loads(template_row["extended_key_usage_json"]),
         crl_url=crl_url,
+        aia_url=aia_url,
     )
     return x509_utils.cert_to_pem(cert), x509_utils.key_to_pem(leaf_key, key_passphrase or None)
 
@@ -90,11 +91,16 @@ async def issue_certificate(
     # stored san_json honest about what the certificate actually contains.
     all_sans = list(dict.fromkeys([common_name, *sans]))
 
-    crl_base_url = await get_crl_base_url(db)
-    crl_url = f"{crl_base_url}/crl/{ca_row['id']}.crl"
+    base_url = await get_crl_base_url(db)
+    crl_url = f"{base_url}/crl/{ca_row['id']}.crl"
+    # Same base as the CRL, and plain http:// for the same reason — a client
+    # that has to fetch the issuing CA in order to validate a chain cannot be
+    # asked to validate a chain in order to fetch it.
+    aia_url = f"{base_url}/aia/{ca_row['id']}.crt"
 
     cert_pem, key_pem = await asyncio.to_thread(
-        _issue_sync, dict(ca_row), dict(template_row), common_name, all_sans, crl_url, key_passphrase
+        _issue_sync, dict(ca_row), dict(template_row), common_name, all_sans,
+        crl_url, aia_url, key_passphrase,
     )
     info = x509_utils.parse_certificate(cert_pem)
 

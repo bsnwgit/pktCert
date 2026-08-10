@@ -363,12 +363,18 @@ python3 tests/test_alert_notifications.py
 python3 tests/test_renewal.py
 ```
 
+```bash
+python3 tests/test_chain_and_constraints.py
+```
+
 - **test_pki_correctness** — CRL Distribution Points on every issuance path,
   CSR proof-of-possession, CN-in-SAN, RFC 5280 CRL numbering
 - **test_alert_notifications** — real delivery to a live HTTP receiver,
   delivery logging, no re-notification while an event stays open
 - **test_renewal** — subject/SAN preservation, fresh keys, supersede-not-revoke,
   and the auto-renewal window
+- **test_chain_and_constraints** — AIA chain building, CA path length and name
+  constraints, RFC 5280 revocation reason codes
 
 ## Contributing
 
@@ -376,6 +382,20 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Known Gaps / Fast-Follow Work
 
-- No ACME protocol server (RFC 8555) — issuance is UI/API-driven only.
+- No ACME protocol server (RFC 8555) — issuance is UI/API-driven only, and
+  there is no SCEP or EST enrollment for network devices.
 - No OCSP responder — revocation status is only available via CRL.
-- Censys is the only optional CT-search provider beyond crt.sh.
+- CA private keys are encrypted at rest with a key in `config.yaml` on the
+  same host; no PKCS#11/HSM support and no offline-root workflow.
+- One admin role issues, revokes, and reveals keys — no separation of duties
+  and no issuance approval workflow.
+- The audit trail (`cert_events`) is ordinary mutable rows, not tamper-evident,
+  and has no SIEM/syslog export.
+- Templates enforce no policy ceiling — no maximum validity, no allowed-domain
+  restriction, no CAA check, no certificate linting on issuance.
+- No PKCS#12 export (import works); PEM only.
+- Discovery records what a certificate is but grades nothing — no chain-validity,
+  hostname-match, weak-key or weak-signature verdict — and doesn't cover
+  STARTTLS protocols or filesystem/keystore certificate stores.
+- Censys is the only optional CT-search provider beyond crt.sh, and CT search is
+  a one-shot lookup rather than continuous monitoring for unauthorised issuance.
