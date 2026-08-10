@@ -398,6 +398,12 @@ def csr_from_pem(pem: str) -> x509.CertificateSigningRequest:
     return x509.load_pem_x509_csr(pem.encode())
 
 
+def csr_der_to_pem(der: bytes) -> str:
+    """Enrolment protocols carry PKCS#10 as raw DER; everything internal
+    speaks PEM."""
+    return x509.load_der_x509_csr(der).public_bytes(serialization.Encoding.PEM).decode()
+
+
 def sign_certificate(
     csr: x509.CertificateSigningRequest,
     ca_cert: x509.Certificate,

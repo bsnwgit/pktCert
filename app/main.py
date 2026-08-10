@@ -41,6 +41,8 @@ from app.api import (
     crl as crl_router,
     aia as aia_router,
     approvals as approvals_router,
+    est as est_router,
+    enrollment_profiles as enrollment_profiles_router,
 )
 
 settings = get_settings()
@@ -171,6 +173,7 @@ app.include_router(ai_router.router,        prefix="/api/ai",           tags=["a
 app.include_router(widgets_router.router,   prefix="/api/widgets",      tags=["widgets"])
 app.include_router(docs_router.router,      prefix="/api/docs-content", tags=["docs"])
 app.include_router(approvals_router.router, prefix="/api/approvals",   tags=["approvals"])
+app.include_router(enrollment_profiles_router.router, prefix="/api/enrollment-profiles", tags=["enrollment"])
 # Deliberately outside /api and unauthenticated — see app/api/crl.py's
 # module docstring for why. Registered before the SPA catch-all below so
 # it takes priority over that route's broader "/{full_path:path}" pattern.
@@ -179,6 +182,10 @@ app.include_router(crl_router.router,       prefix="/crl",              tags=["c
 # public by definition (see app/api/aia.py). Registered before the SPA
 # catch-all so it wins over "/{full_path:path}".
 app.include_router(aia_router.router,       prefix="/aia",              tags=["aia"])
+# EST (RFC 7030). The path is fixed by the RFC — devices look at
+# /.well-known/est and nowhere else — so it sits outside /api, and before
+# the SPA catch-all.
+app.include_router(est_router.router,       prefix="/.well-known/est",  tags=["est"])
 
 # -- Health check ------------------------------------------------------------------
 
