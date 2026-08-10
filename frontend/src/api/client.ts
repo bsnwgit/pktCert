@@ -294,10 +294,16 @@ export const api = {
   runCleanupNow: () => request<CleanupResult>('/system/cleanup', { method: 'POST' }),
 
   // ── Full backup bundle export/import ────────────────────────────────────
-  exportConfig: async (): Promise<Blob> => {
+  exportConfig: async (password: string): Promise<Blob> => {
     const headers: Record<string, string> = {}
     if (_accessToken) headers['Authorization'] = `Bearer ${_accessToken}`
-    const res = await fetch('/api/system/export', { headers })
+    // FastAPI needs this to parse the JSON body carrying the password.
+    headers['Content-Type'] = 'application/json'
+    const res = await fetch('/api/system/export', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ password }),
+    })
     if (!res.ok) throw new Error(`Export failed: ${res.status} ${res.statusText}`)
     return res.blob()
   },
