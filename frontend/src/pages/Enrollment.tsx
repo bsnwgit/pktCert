@@ -1,5 +1,5 @@
 // Settings → Enrolment. Manages the credentials devices use to obtain their
-// own certificates over EST (and SCEP, once that lands).
+// own certificates over EST or SCEP.
 //
 // A profile secret is a bearer credential: anything holding it can obtain a
 // certificate. That's unavoidable for unattended device enrolment, so this
@@ -135,7 +135,8 @@ export default function Enrollment() {
             <p>Devices that support <span className="text-gray-300 font-medium">EST</span> (RFC 7030) can request their own certificates instead of someone issuing one by hand and copying files onto the box. The device generates its own key — pktCert never sees it — and sends only a certificate request.</p>
             <p>An <span className="text-gray-300 font-medium">enrolment profile</span> is what authorises that: a shared secret bound to one CA and one template. Anything holding the secret can obtain a certificate, so keep each profile as narrow as the job needs. The <span className="text-gray-300 font-medium">name suffix</span> restricts what names it may request — a profile for the switch fleet has no business issuing a certificate for the payroll server — and the <span className="text-gray-300 font-medium">certificate limit</span> caps the damage if the secret leaks.</p>
             <p>The secret is shown once, when the profile is created, and stored encrypted afterwards. Rotate it if it leaks; every device on the old secret stops enrolling immediately.</p>
-            <p>Point devices at <code className="text-gray-300">https://this-server/.well-known/est/</code> — the path is fixed by the RFC. <code className="text-gray-300">/cacerts</code> needs no credentials, so a device can install the trust anchor before it has anything to authenticate with.</p>
+            <p><span className="text-gray-300 font-medium">EST</span> devices go to <code className="text-gray-300">https://this-server/.well-known/est/</code> and authenticate with the profile's username and secret. <code className="text-gray-300">/cacerts</code> needs no credentials, so a device can install the trust anchor before it has anything to authenticate with.</p>
+            <p><span className="text-gray-300 font-medium">SCEP</span> devices go to <code className="text-gray-300">http://this-server/scep</code> and use the profile's secret as their <em>challenge password</em>. There's no username. SCEP is the older protocol but it's what most network hardware and MDM actually speaks — Cisco, Juniper, Palo Alto, Fortinet, Intune. Its request body is encrypted to the CA, so unlike EST it doesn't require TLS.</p>
             <p><span className="text-gray-300 font-medium">EST requires TLS.</span> The request carries a secret that yields a trusted certificate, so over plain HTTP that secret belongs to anyone on the path. Enrolment over HTTP is refused unless you deliberately allow it for an isolated network.</p>
           </HelpButton>
         </div>
@@ -159,7 +160,7 @@ export default function Enrollment() {
               <label className="block text-xs text-white mb-1">Protocol</label>
               <select value={protocol} onChange={e => setProtocol(e.target.value as 'est' | 'scep')} className={INPUT}>
                 <option value="est">EST (RFC 7030)</option>
-                <option value="scep" disabled>SCEP — not yet available</option>
+                <option value="scep">SCEP (RFC 8894)</option>
               </select>
             </div>
             <div>
@@ -177,9 +178,16 @@ export default function Enrollment() {
               </select>
             </div>
             <div>
-              <label className="block text-xs text-white mb-1">Username</label>
-              <input value={username} onChange={e => setUsername(e.target.value)} placeholder="switches" className={INPUT} />
-              <p className="text-xs text-slate-400 mt-1">Devices authenticate with HTTP Basic — this is the username half.</p>
+              <label className="block text-xs text-white mb-1">
+                Username{protocol === 'scep' ? ' (not used by SCEP)' : ''}
+              </label>
+              <input value={username} onChange={e => setUsername(e.target.value)} placeholder="switches"
+                disabled={protocol === 'scep'} className={INPUT} />
+              <p className="text-xs text-slate-400 mt-1">
+                {protocol === 'scep'
+                  ? 'SCEP has no username — a device authenticates with the challenge password alone.'
+                  : 'Devices authenticate with HTTP Basic — this is the username half.'}
+              </p>
             </div>
             <div>
               <label className="block text-xs text-white mb-1">Allowed name suffix (optional)</label>

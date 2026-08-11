@@ -46,7 +46,7 @@ checkout needed):
 - [Issuing & Revoking Certificates](#issuing--revoking-certificates)
 - [Renewal](#renewal)
 - [Separation of Duties](#separation-of-duties)
-- [Device Enrolment (EST)](#device-enrolment-est)
+- [Device Enrolment (EST and SCEP)](#device-enrolment-est-and-scep)
 - [External Certificates & Secret Storage](#external-certificates--secret-storage)
 - [Settings Layout](#settings-layout)
 - [Configuration Reference](#configuration-reference)
@@ -219,7 +219,7 @@ Settings), issuing or revoking records a request instead of acting, and a
 Self-approval is refused, so a single-admin install should leave this off; the
 Approvals page detects that case and says so.
 
-## Device Enrolment (EST)
+## Device Enrolment (EST and SCEP)
 
 Devices request their own certificates over EST (RFC 7030) at
 `/.well-known/est/{cacerts,simpleenroll,simplereenroll,csrattrs}` — the device
@@ -232,6 +232,17 @@ encrypted at rest thereafter.
 
 EST requires TLS, and enrolment over plain HTTP is refused — the request
 carries a secret that yields a trusted certificate.
+
+**SCEP** (RFC 8894) is served at `/scep` for the hardware that doesn't speak
+EST — which is most network equipment: Cisco IOS and ASA, Juniper, Palo Alto,
+Fortinet, and MDM platforms pushing certificates to laptops and phones. A
+device authenticates with the profile secret as its *challenge password*;
+there is no username. SCEP does not require TLS, because its request body is
+already encrypted to the CA's public key.
+
+SCEP failures are returned as signed CertRep messages with a `pkiStatus` and
+`failInfo`, not as HTTP errors — a device that receives a bare 403 with no
+CertRep typically retries forever.
 
 ### Passphrase-protecting the private key
 
@@ -451,6 +462,10 @@ python3 tests/test_est.py
 ```
 
 ```bash
+python3 tests/test_scep.py
+```
+
+```bash
 python3 tests/test_alert_conditions.py
 ```
 
@@ -473,6 +488,7 @@ python3 tests/test_export_stepup.py
 - **test_offline_root** — the whole offline ceremony, with the root key held
   only in the test and never given to the app
 - **test_est** — RFC 7030 enrolment: PKCS#7 responses, profile policy, secret rotation
+- **test_scep** — RFC 8894 enrolment driven by a real SCEP client built in the test
 - **test_alert_conditions** — that a parameter changes the outcome and a scope
   genuinely narrows, plus that pre-parameter rules keep working
 - **test_export_stepup** — password re-entry before the backup bundle downloads
@@ -483,7 +499,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Known Gaps / Fast-Follow Work
 
-- No ACME protocol server (RFC 8555) — issuance is UI/API-driven only.
+- No ACME protocol server (RFC 8555) — issuance is UI/API-driven, or via
+  EST/SCEP for devices.
 - No OCSP responder — revocation status is only available via CRL.
 - CA private keys for online CAs are encrypted at rest with a key in
   `config.yaml` on the same host; no PKCS#11/HSM support. An offline root

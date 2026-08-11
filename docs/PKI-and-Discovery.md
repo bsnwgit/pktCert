@@ -478,3 +478,55 @@ parameter for it, so nothing needed migrating and nothing changed meaning.
 Certificates that are revoked or superseded are excluded from every condition
 except "revoked" itself: a revoked certificate's problems are moot, and a
 superseded one's replacement already exists.
+
+
+## SCEP enrolment
+
+`/scep` speaks RFC 8894, for the hardware that doesn't do EST — Cisco IOS and
+ASA, Juniper, Palo Alto, Fortinet, and MDM platforms issuing device
+certificates. One endpoint, distinguished by an `operation` parameter, because
+SCEP was designed for devices with minimal HTTP stacks:
+
+| Operation | |
+|---|---|
+| `GetCACert` | the CA certificate, or the chain as PKCS#7 |
+| `GetCACaps` | what this server supports |
+| `PKIOperation` | enrol — POST with a binary body, or GET with base64 in the query |
+
+A request is PKCS#7 SignedData whose content is PKCS#7 EnvelopedData encrypted
+to the CA, with the PKCS#10 inside that. The device signs the outer layer with
+a throwaway self-signed certificate it generates on the spot — it has no
+certificate yet, so that is all it can prove. Authorisation comes from the
+**challenge password** carried inside the CSR, matched against an enrolment
+profile's secret. There is no username.
+
+That makes SCEP's authentication weaker than EST's, which is exactly why a
+profile's name-suffix restriction and certificate cap matter more here.
+
+Unlike EST, SCEP does **not** require TLS. The request body is already
+encrypted to the CA's public key, so the challenge password isn't exposed to
+the network the way an EST secret over plain HTTP would be. Refusing plain
+HTTP would make the endpoint useless for the hardware it exists to serve.
+
+### Failures are SCEP messages, not HTTP errors
+
+A refused enrolment returns HTTP 200 with a signed CertRep carrying
+`pkiStatus = FAILURE` and a `failInfo`. Devices largely ignore HTTP status
+codes here; one that gets a 403 with no CertRep typically retries forever.
+The transactionID is echoed either way so the device can match the reply.
+
+### Implementation note
+
+`cryptography` handles the envelope and the signing, but its
+PKCS7SignatureBuilder cannot attach arbitrary authenticated attributes — and
+SCEP's protocol *is* a set of authenticated attributes (messageType,
+transactionID, senderNonce, pkiStatus, recipientNonce). The SignedData layer is
+therefore assembled in `app/cert/scep_messages.py` using `asn1crypto`, which
+models CMS properly, while every cryptographic operation stays with
+`cryptography`.
+
+One trap worth recording: the response envelope must be built with
+`PKCS7Options.Binary`. Without it the library applies S/MIME canonicalisation,
+turning every `0x0A` byte in the DER into `0x0D 0x0A` and silently corrupting
+the certificate bundle by a variable number of bytes — the device then receives
+something that isn't valid DER and fails with no useful diagnostic.

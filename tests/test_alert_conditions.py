@@ -121,7 +121,7 @@ async def main() -> int:
     def make_rule(name, condition, params=None, scope=None, **kw):
         r = client.post("/api/alerts/rules", json={
             "name": name, "condition_type": condition, "severity": "warning",
-            "enabled": True, "cooldown_min": 0, "channels": ["inapp"],
+            "enabled": True, "channels": ["inapp"],
             "params": params or {}, "scope": scope or {}, **kw,
         })
         assert r.status_code == 201, r.text
@@ -245,6 +245,61 @@ async def main() -> int:
     await tick()
     check("a pre-parameters rule still reads its threshold as days",
           len(alerts_for(legacy)) > 0, "legacy rule matched nothing")
+
+    print("\n── repeat / re-alert behaviour ──")
+    repeat_cert = await seed_cert(common_name="repeat.example.com", key_size=512)
+    repeat_rule = make_rule("Repeat behaviour", "weak_key", scope={"name_like": "repeat"})
+    await tick()
+    opened = alerts_for(repeat_rule)
+    check("the problem raises one alert", len(opened) == 1, str(len(opened)))
+
+    await tick(); await tick()
+    check("a still-open alert does not repeat", len(alerts_for(repeat_rule)) == 1,
+          str(len(alerts_for(repeat_rule))))
+    check("and does not re-notify",
+          len(q("SELECT id FROM notification_log WHERE event_id = ?", opened[0]["id"])) == 1)
+
+    # Acknowledging dismisses it — and the problem is still there.
+    client.post(f"/api/alerts/events/{opened[0]['id']}/ack")
+    await tick()
+    after_ack = alerts_for(repeat_rule)
+    check("acknowledging while the problem persists raises it again",
+          len(after_ack) == 1 and after_ack[0]["id"] != opened[0]["id"], str([a["id"] for a in after_ack]))
+
+    # Resolving is the same: dismissal, not a fix.
+    client.post(f"/api/alerts/events/{after_ack[0]['id']}/resolve")
+    await tick()
+    after_resolve = alerts_for(repeat_rule)
+    check("resolving while the problem persists raises it again",
+          len(after_resolve) == 1 and after_resolve[0]["id"] != after_ack[0]["id"],
+          str([a["id"] for a in after_resolve]))
+
+    # Fixing it is what actually stops the alerts.
+    async with aiosqlite.connect(str(DB)) as db:
+        await db.execute("UPDATE certificates SET key_size = 4096 WHERE id = ?", (repeat_cert,))
+        await db.commit()
+    await tick()
+    check("fixing the problem stops it — nothing re-fires", len(alerts_for(repeat_rule)) == 0,
+          str(len(alerts_for(repeat_rule))))
+    client.post(f"/api/alerts/events/{after_resolve[0]['id']}/ack")
+    await tick()
+    check("and acknowledging a fixed problem does not resurrect it",
+          len(alerts_for(repeat_rule)) == 0, str(len(alerts_for(repeat_rule))))
+
+    print("\n── revocation is terminal, so acking it is final ──")
+    revoked_cert = await seed_cert(common_name="gone.example.com", status="revoked")
+    rev_rule = make_rule("Revoked", "cert_revoked", scope={"name_like": "gone"})
+    await tick()
+    rev_alerts = alerts_for(rev_rule)
+    check("a revocation raises once", len(rev_alerts) == 1, str(len(rev_alerts)))
+    client.post(f"/api/alerts/events/{rev_alerts[0]['id']}/ack")
+    await tick(); await tick()
+    after = alerts_for(rev_rule)
+    # The acknowledged event stays as the record; what must NOT happen is a
+    # second one appearing every minute for something nobody can act on.
+    check("acknowledging it is final — no second alert is raised",
+          len(after) == 1 and after[0]["id"] == rev_alerts[0]["id"], str([a["id"] for a in after]))
+    check("and it stays acknowledged", bool(after[0]["acked"]))
 
     print("\n── resolution ──")
     async with aiosqlite.connect(str(DB)) as db:

@@ -32,7 +32,8 @@ const REVOCATION_REASONS: { value: string; label: string }[] = [
   { value: 'aa_compromise', label: 'AA compromise — attribute authority exposed' },
 ]
 
-const PAGE_SIZE = 25
+const PAGE_SIZE_DEFAULT = 25
+const PAGE_SIZE_OPTIONS = [25, 50, 75, 100]
 
 function fmtDate(ts: string | null): string {
   if (!ts) return '—'
@@ -64,7 +65,15 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
   const [issued, setIssued] = useState<Certificate | null>(null)
   const [approvalPending, setApprovalPending] = useState<string | null>(null)
   const [justification, setJustification] = useState('')
+  // Only ask for a justification when a second admin will actually read it.
+  const [approvalRequired, setApprovalRequired] = useState(false)
   const [pending, setPending] = useState<PendingAction | null>(null)
+
+  useEffect(() => {
+    api.getApprovalConfig()
+      .then(cfg => setApprovalRequired(cfg.issuance_approval_required))
+      .catch(() => setApprovalRequired(false))
+  }, [])
 
   const submit = async () => {
     if (!commonName.trim() || !caId || !templateId) return
@@ -167,11 +176,16 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
                   </div>
                 )}
               </div>
-              <div>
-                <label className="block text-xs text-white mb-1">Justification (optional)</label>
-                <input value={justification} onChange={e => setJustification(e.target.value)}
-                  placeholder="Shown to whoever approves this, if approval is required" className={inp} />
-              </div>
+              {approvalRequired && (
+                <div>
+                  <label className="block text-xs text-white mb-1">Justification (optional)</label>
+                  <input value={justification} onChange={e => setJustification(e.target.value)}
+                    placeholder="Shown to the admin who approves this" className={inp} />
+                  <p className="text-xs text-amber-300/90 mt-1">
+                    Approval is required — this records a request for another admin rather than issuing now.
+                  </p>
+                </div>
+              )}
               {error && <p className="text-sm text-red-400">{error}</p>}
               <div className="flex items-center gap-3 pt-1">
                 <button onClick={submit} disabled={saving || !commonName.trim() || !caId || !templateId}
@@ -565,6 +579,9 @@ export default function Certificates() {
   const [sourceFilter, setSourceFilter] = useState('')
   const [search, setSearch] = useState(params.get('search') ?? '')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE_DEFAULT)
+  // Revoked certificates only accumulate — hidden unless asked for.
+  const [hideRevoked, setHideRevoked] = useState(true)
   const [selected, setSelected] = useState<Certificate | null>(null)
   const [showIssue, setShowIssue] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
@@ -588,12 +605,23 @@ export default function Certificates() {
   const filtered = useMemo(() => certs.filter(c =>
     (!statusFilter || c.status === statusFilter) &&
     (!sourceFilter || c.source === sourceFilter) &&
+    // Revoked certificates are dead weight in the day-to-day view — they can't
+    // be renewed, don't expire in any way that matters, and only grow in
+    // number. Hidden by default, but never hidden when you've explicitly asked
+    // for them with the status filter.
+    (!hideRevoked || statusFilter === 'revoked' || c.status !== 'revoked') &&
     (!search || c.common_name.toLowerCase().includes(search.toLowerCase()) || (c.host ?? '').toLowerCase().includes(search.toLowerCase()))
-  ), [certs, statusFilter, sourceFilter, search])
+  ), [certs, statusFilter, sourceFilter, search, hideRevoked])
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const revokedCount = useMemo(() => certs.filter(c => c.status === 'revoked').length, [certs])
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
   const pageClamped = Math.min(page, totalPages)
-  const paged = filtered.slice((pageClamped - 1) * PAGE_SIZE, pageClamped * PAGE_SIZE)
+  const paged = filtered.slice((pageClamped - 1) * pageSize, pageClamped * pageSize)
+  const firstShown = filtered.length === 0 ? 0 : (pageClamped - 1) * pageSize + 1
+  const lastShown = (pageClamped - 1) * pageSize + paged.length
+
+  const changePageSize = (size: number) => { setPageSize(size); setPage(1) }
 
   const setStatus = (v: string) => { setStatusFilter(v); setPage(1); setParams(v ? { status: v } : {}) }
 
@@ -642,7 +670,31 @@ export default function Certificates() {
           <option value="issued">Issued</option>
           <option value="external">External / Uploaded</option>
         </select>
-        <span className="text-xs text-white ml-auto">{filtered.length} certificate{filtered.length !== 1 ? 's' : ''}</span>
+        <label className="flex items-center gap-1.5 text-xs text-white cursor-pointer select-none">
+          <input type="checkbox" checked={hideRevoked}
+            onChange={e => { setHideRevoked(e.target.checked); setPage(1) }}
+            className="accent-sky-500" />
+          Hide revoked{revokedCount > 0 ? ` (${revokedCount})` : ''}
+        </label>
+      </div>
+
+      {/* Count and page size, top-left of the table, matching the rest of the suite. */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <span className="text-xs text-white">
+          {filtered.length === 0
+            ? 'No certificates'
+            : `Showing ${firstShown.toLocaleString()}–${lastShown.toLocaleString()} of ${filtered.length.toLocaleString()} certificate${filtered.length !== 1 ? 's' : ''}`}
+          {hideRevoked && revokedCount > 0 && (
+            <span className="text-white/60"> · {revokedCount} revoked hidden</span>
+          )}
+        </span>
+        <div className="flex items-center gap-2">
+          <label htmlFor="certs-per-page" className="text-xs text-gray-400">Certificates per page:</label>
+          <select id="certs-per-page" value={pageSize} onChange={e => changePageSize(Number(e.target.value))}
+            className="text-sm bg-gray-800 border border-gray-700 text-white rounded-lg px-2 py-1 focus:outline-none focus:border-sky-500">
+            {PAGE_SIZE_OPTIONS.map(size => <option key={size} value={size}>{size}</option>)}
+          </select>
+        </div>
       </div>
 
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
