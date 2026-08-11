@@ -5,6 +5,7 @@ import { useAuth } from '../store/auth'
 import HelpButton from '../components/HelpButton'
 import { copyToClipboard } from '../utils/clipboard'
 import Templates from './Templates'
+import Enrollment from './Enrollment'
 
 // -- Generic helpers -------------------------------------------------------------
 type SettingsMap = Record<string, unknown>
@@ -1379,7 +1380,7 @@ function UsersTab() {
 }
 
 // -- Main page ---------------------------------------------------------------------
-type TabId = 'general' | 'security' | 'data' | 'notifications' | 'apikeys' | 'system' | 'certsettings' | 'certkeys' | 'templates' | 'discovery'
+type TabId = 'general' | 'security' | 'data' | 'notifications' | 'apikeys' | 'system' | 'certsettings' | 'certkeys' | 'templates' | 'enrollment' | 'discovery'
 
 const TABS: Array<{ id: TabId; label: string; adminOnly?: boolean; gapBefore?: boolean }> = [
   { id: 'general',       label: 'General' },
@@ -1391,6 +1392,7 @@ const TABS: Array<{ id: TabId; label: string; adminOnly?: boolean; gapBefore?: b
   { id: 'certsettings',  label: 'Cert Settings',     gapBefore: true },
   { id: 'certkeys',      label: 'Cert Keys' },
   { id: 'templates',     label: 'Templates' },
+  { id: 'enrollment',    label: 'Enrolment' },
   { id: 'discovery',     label: 'Discovery & Alerts' },
 ]
 
@@ -2421,6 +2423,10 @@ export default function Settings() {
       )}
 
       {tab === 'templates' && <Templates />}
+
+      {/* Enrolment — EST/SCEP profiles devices authenticate with, plus the
+          recent attempt log. App-specific, so it lives after the divider. */}
+      {tab === 'enrollment' && <Enrollment />}
 
       {/* Discovery & Alerts — app-specific, defaults for new Scan Targets and CT search */}
       {tab === 'discovery' && (

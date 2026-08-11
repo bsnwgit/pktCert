@@ -224,6 +224,22 @@ export const api = {
   cancelRequest: (id: number) =>
     request<CertRequest>(`/approvals/${id}/cancel`, { method: 'POST' }),
 
+  // -- Enrolment profiles (EST / SCEP device enrolment) ------------------------------
+  getEnrollmentProfiles: () => request<EnrollmentProfile[]>('/enrollment-profiles'),
+  createEnrollmentProfile: (body: {
+    name: string; protocol: 'est' | 'scep'; ca_id: number; template_id: number
+    username?: string; allowed_name_suffix?: string; max_certs?: number | null; enabled?: boolean
+  }) => request<EnrollmentProfile & { secret: string }>('/enrollment-profiles', { method: 'POST', body: JSON.stringify(body) }),
+  updateEnrollmentProfile: (id: number, body: {
+    name: string; protocol: 'est' | 'scep'; ca_id: number; template_id: number
+    username?: string; allowed_name_suffix?: string; max_certs?: number | null; enabled?: boolean
+  }) => request<EnrollmentProfile>(`/enrollment-profiles/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  rotateEnrollmentSecret: (id: number) =>
+    request<{ secret: string }>(`/enrollment-profiles/${id}/rotate-secret`, { method: 'POST' }),
+  deleteEnrollmentProfile: (id: number) => request(`/enrollment-profiles/${id}`, { method: 'DELETE' }),
+  getEnrollmentLog: (params?: { outcome?: string; limit?: number }) =>
+    request<EnrollmentLogEntry[]>(`/enrollment-profiles/log${toQueryString(params)}`),
+
   // -- Templates ---------------------------------------------------------------------
   getTemplates: () => request<CertTemplate[]>('/templates'),
   createTemplate: (body: Partial<CertTemplate>) => request<CertTemplate>('/templates', { method: 'POST', body: JSON.stringify(body) }),
@@ -543,6 +559,34 @@ export interface CertRequest {
   decided_at: string | null
   decision_note: string | null
   resulting_certificate_id: number | null
+}
+
+export interface EnrollmentProfile {
+  id: number
+  name: string
+  protocol: 'est' | 'scep'
+  ca_id: number
+  template_id: number
+  username: string | null
+  enabled: boolean
+  allowed_name_suffix: string | null
+  max_certs: number | null
+  issued_count: number
+  created_at: string
+  last_used_at: string | null
+}
+
+export interface EnrollmentLogEntry {
+  id: number
+  profile_id: number | null
+  protocol: string
+  operation: string
+  client_ip: string | null
+  subject: string | null
+  outcome: 'issued' | 'denied' | 'error'
+  detail: string | null
+  certificate_id: number | null
+  created_at: string
 }
 
 export type CaType = 'root' | 'intermediate'
