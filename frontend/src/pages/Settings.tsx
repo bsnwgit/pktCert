@@ -5,6 +5,7 @@ import { useAuth } from '../store/auth'
 import HelpButton from '../components/HelpButton'
 import { copyToClipboard } from '../utils/clipboard'
 import Templates from './Templates'
+import Enrollment from './Enrollment'
 
 // -- Generic helpers -------------------------------------------------------------
 type SettingsMap = Record<string, unknown>
@@ -1379,7 +1380,7 @@ function UsersTab() {
 }
 
 // -- Main page ---------------------------------------------------------------------
-type TabId = 'general' | 'security' | 'data' | 'notifications' | 'apikeys' | 'system' | 'certsettings' | 'certkeys' | 'templates' | 'discovery'
+type TabId = 'general' | 'security' | 'data' | 'notifications' | 'apikeys' | 'system' | 'certsettings' | 'certkeys' | 'templates' | 'enrollment' | 'discovery'
 
 const TABS: Array<{ id: TabId; label: string; adminOnly?: boolean; gapBefore?: boolean }> = [
   { id: 'general',       label: 'General' },
@@ -1391,6 +1392,7 @@ const TABS: Array<{ id: TabId; label: string; adminOnly?: boolean; gapBefore?: b
   { id: 'certsettings',  label: 'Cert Settings',     gapBefore: true },
   { id: 'certkeys',      label: 'Cert Keys' },
   { id: 'templates',     label: 'Templates' },
+  { id: 'enrollment',    label: 'Enrolment' },
   { id: 'discovery',     label: 'Discovery & Alerts' },
 ]
 
@@ -1544,8 +1546,8 @@ export default function Settings() {
     'okta_saml_enabled', 'okta_saml_idp_entity_id', 'okta_saml_idp_sso_url',
     'okta_saml_idp_cert', 'okta_saml_sp_entity_id', 'okta_saml_sp_cert', 'okta_saml_sp_key',
   ], settings, load)
-  const crlSave = useSave(['crl_base_url'], settings, load)
-  const backupSave = useSave(['backup_enabled', 'backup_interval_hours', 'backup_rotation_count', 'backup_path'], settings, load)
+  const crlSave = useSave(['crl_base_url', 'require_issuance_approval', 'require_revocation_approval'], settings, load)
+  const backupSave = useSave(['backup_enabled', 'backup_interval_hours', 'backup_rotation_count', 'backup_path', 'backup_include_config'], settings, load)
   const storageSave = useSave(['alert_event_retention_days'], settings, load)
   const lucidSave = useSave(['lucid_api_token'], settings, load)
   const discoverySave = useSave([
@@ -1582,6 +1584,10 @@ export default function Settings() {
 
   const [exportRunning, setExportRunning] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
+  // Step-up re-auth before the bundle is generated — it carries config.yaml,
+  // i.e. the key to every encrypted secret in the database, alongside it.
+  const [exportPrompt, setExportPrompt] = useState(false)
+  const [exportPassword, setExportPassword] = useState('')
   const ALL_BUNDLE_FILES = ['pktcert.db', 'config.yaml']
   const [importFiles, setImportFiles] = useState<Set<string>>(new Set(ALL_BUNDLE_FILES))
   const [importFile, setImportFile] = useState<File | null>(null)
@@ -1593,13 +1599,15 @@ export default function Settings() {
     setExportRunning(true)
     setExportError(null)
     try {
-      const blob = await api.exportConfig()
+      const blob = await api.exportConfig(exportPassword)
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
       a.download = `pktcert-export-${new Date().toISOString().slice(0, 10)}.tar.gz`
       a.click()
       URL.revokeObjectURL(url)
+      setExportPrompt(false)
+      setExportPassword('')
     } catch (e: any) {
       setExportError(e.message ?? 'Export failed')
     } finally {
@@ -2051,6 +2059,10 @@ export default function Settings() {
           <Field label="Backup path" hint="Directory on server where snapshots are stored">
             <TextInput value={str('backup_path')} onChange={v => set('backup_path', v)} mono placeholder="<install_dir>/backups" />
           </Field>
+          <Field label="Include config.yaml in snapshots"
+            hint="Off by default — it holds the key that decrypts every secret in the database">
+            <Toggle value={bool('backup_include_config')} onChange={v => set('backup_include_config', v)} />
+          </Field>
           <Field label="Manual backup" hint="Trigger a backup run immediately using current settings">
             <div className="space-y-3">
               <div className="flex items-center gap-3 flex-wrap">
@@ -2088,10 +2100,35 @@ export default function Settings() {
           </Field>
           <Field label="Export bundle" hint="Download pktcert.db + config.yaml as a .tar.gz">
             <div className="flex items-center gap-3 flex-wrap">
-              <button onClick={runExport} disabled={exportRunning}
-                className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm rounded-lg px-4 py-2 transition-colors">
-                {exportRunning ? 'Generating…' : 'Download Export'}
-              </button>
+              {!exportPrompt ? (
+                <button onClick={() => { setExportPassword(''); setExportError(null); setExportPrompt(true) }}
+                  className="bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg px-4 py-2 transition-colors">
+                  Download Export
+                </button>
+              ) : (
+                <div className="flex flex-col gap-2 w-full">
+                  <p className="text-xs text-amber-300/90">
+                    This bundle contains the database <em>and</em> config.yaml — every encrypted secret plus the
+                    key that decrypts them. Confirm your password to download it, then store it as carefully as
+                    you would the secrets themselves.
+                  </p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <input type="password" value={exportPassword} autoComplete="current-password"
+                      onChange={e => setExportPassword(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter' && exportPassword) runExport() }}
+                      placeholder="Your current password"
+                      className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" />
+                    <button onClick={runExport} disabled={exportRunning || !exportPassword}
+                      className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm rounded-lg px-4 py-2 transition-colors">
+                      {exportRunning ? 'Generating…' : 'Confirm & Download'}
+                    </button>
+                    <button onClick={() => { setExportPrompt(false); setExportPassword(''); setExportError(null) }}
+                      className="text-white hover:text-white text-sm border border-gray-700 rounded-lg px-4 py-2 transition-colors">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
               {exportError && <span className="text-xs text-red-400">{exportError}</span>}
             </div>
           </Field>
@@ -2355,11 +2392,19 @@ export default function Settings() {
             content: <>
               <p><span className="text-gray-300 font-medium">CRL Base URL</span> feeds the CRL Distribution Point baked into every certificate issued from now on. Keep it plain <span className="text-gray-300 font-medium">http://</span>, not https:// — standard PKI practice, since checking revocation over HTTPS creates a circular trust dependency (validating the CRL fetch's own cert would itself require a revocation check), and the CRL is already self-verifying via the issuing CA's signature.</p>
               <p>This is baked into each certificate at the moment it's issued, not looked up live — set it correctly <span className="text-gray-300 font-medium">before</span> issuing certs you want revocation-checkable. Changing it later has no effect on certs already issued; they keep pointing at whatever URL was set when they were signed.</p>
+              <p><span className="text-gray-300 font-medium">Require approval</span> turns on separation of duties: issuing or revoking records a request on the Approvals page instead of acting, and a <span className="text-gray-300 font-medium">different</span> admin has to approve it. Nobody can approve their own request — so an install with only one admin account cannot approve anything, and should leave this off.</p>
+              <p>Both toggles are <span className="text-gray-300 font-medium">off by default</span>. A small team where everyone is trusted equally gains nothing from an approval step and pays for it on every issuance. Turning them off again takes effect immediately; anything already pending stays on the Approvals page until it's actioned or withdrawn.</p>
             </>,
           }}
         >
           <Field label="CRL Base URL" hint="Used for the CRL link baked into issued certs — keep this http://, not https://">
             <TextInput value={str('crl_base_url')} onChange={v => set('crl_base_url', v)} placeholder="http://SERVER-IP:8763" />
+          </Field>
+          <Field label="Require approval to issue" hint="A second admin must approve before a certificate is issued">
+            <Toggle value={bool('require_issuance_approval')} onChange={v => set('require_issuance_approval', v)} />
+          </Field>
+          <Field label="Require approval to revoke" hint="A second admin must approve before a certificate is revoked">
+            <Toggle value={bool('require_revocation_approval')} onChange={v => set('require_revocation_approval', v)} />
           </Field>
         </Section>
       )}
@@ -2378,6 +2423,10 @@ export default function Settings() {
       )}
 
       {tab === 'templates' && <Templates />}
+
+      {/* Enrolment — EST/SCEP profiles devices authenticate with, plus the
+          recent attempt log. App-specific, so it lives after the divider. */}
+      {tab === 'enrollment' && <Enrollment />}
 
       {/* Discovery & Alerts — app-specific, defaults for new Scan Targets and CT search */}
       {tab === 'discovery' && (

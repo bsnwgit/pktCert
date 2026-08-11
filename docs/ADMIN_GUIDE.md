@@ -43,7 +43,7 @@ output, and are not recoverable afterward (see
 Settings has a section bar above its tab bar with two buttons:
 
 - **Common** — General, Security (Users, Auth, Suite Integration, AI Assistant, SSL/TLS), Data (Storage, Backups), Notifications, User Keys, System. Identical across every pkt* app.
-- **pktCert** — Cert Settings, Cert Keys, Templates, Discovery & Alerts. This app's own.
+- **pktCert** — Cert Settings, Cert Keys, Templates, Enrolment, Discovery & Alerts. This app's own.
 
 Only the selected section's tabs appear in the row below, so switch sections if a tab isn't where you expect it; they previously shared a single row split by a thin divider. Deep links to a specific tab select the right section automatically.
 
@@ -106,28 +106,94 @@ signing are all covered in depth in
 `app/cert/x509_utils.py` wraps the `cryptography` library for every
 signing operation — no external `openssl` process dependency.
 
+## Approvals (separation of duties)
+
+Off by default, and off means genuinely unchanged — issuing and revoking stay
+immediate. Turn either on under Settings → Cert Settings and the operation
+records a request on the Approvals page instead, for a **different** admin to
+approve.
+
+Nobody can approve their own request. That has a practical consequence worth
+knowing before you switch it on: **an install with one admin account cannot
+approve anything**. The Approvals page detects that and says so.
+
+## Device enrolment (EST)
+
+Settings → Enrolment manages the profiles devices authenticate with. A profile
+is a shared secret bound to one CA and one template, optionally limited to a
+name suffix and a certificate count.
+
+The secret is a bearer credential — anything holding it gets a certificate —
+so keep profiles narrow and rotate on suspicion. Rotation is instant and
+one-click; every device on the old secret stops enrolling.
+
+**EST requires TLS.** The request carries a secret that yields a trusted
+certificate, so over plain HTTP that secret belongs to anyone on the path.
+pktCert refuses enrolment over non-TLS connections. `X-Forwarded-Proto` is
+honoured when TLS terminates at a reverse proxy. For an isolated lab network
+where you accept the risk, set `est_allow_insecure_http`.
+
 ## Alerting
 
-Five built-in condition types: `cert_expiring`, `cert_expired`,
-`cert_revoked`, `ca_expiring`, `scan_target_unreachable`. Create rules
-under Alerts → Rules — an inline form, no separate modal. The engine
-evaluates every 60 seconds; `cert_expiring`/`ca_expiring` use a
-days-before-expiry threshold, the others are boolean conditions. Each rule
-has a **cooldown** (minutes, default 15) so a flapping condition doesn't
-spam a new event every tick, and per-rule notification channels (`inapp`,
-`email`, `webhook`, `slack`). Revocation alerts never auto-resolve.
-Resolved alert events are purged automatically after their retention
-window (default 90 days, Settings → Data → Storage).
+Fifteen condition types, each with its own settings — expiry windows,
+minimum key sizes, which signature algorithms count as broken, how long a
+validity period is too long. The full table is in
+[PKI-and-Discovery.md](PKI-and-Discovery.md#alerting-conditions-parameters-and-scope);
+they're declared in `app/cert/alert_conditions.py`, and the Alerts page
+renders its parameter inputs from that declaration, so adding a condition
+there needs no frontend change.
+
+Rules also take a **scope** — one CA, one source, a name or host pattern.
+Empty means everything. Narrow rules are the ones that get acted on.
+
+Create rules under Alerts → Rules (an inline form, no modal). The engine
+evaluates every 60 seconds. Each rule has a **cooldown** (minutes, default 15)
+so a flapping condition doesn't open a new event every tick, and per-rule
+notification channels: `inapp`, `email`, `slack`, `pagerduty`, `webhook`,
+`tracecat`. Channels other than in-app must be configured and enabled under
+Settings → Notifications first; a rule targeting an unconfigured channel is
+recorded as *skipped* rather than failed.
+
+Only the tick that **opens** an event notifies. An event that stays open does
+not re-notify, or an expiring certificate would page someone every minute
+until it was renewed. Revocation alerts never auto-resolve. Every delivery
+attempt is recorded in `notification_log`.
+
+Resolved alert events, and their delivery records, are purged automatically
+after their retention window (default 90 days, Settings → Data → Storage).
+
+Rules written before conditions had parameters keep working: the old
+`threshold` value is still read as the days figure when a rule carries no
+parameter for it.
 
 ## Backup & Restore
 
 Configure schedule and rotation at Settings → Data → Backups, or trigger
 immediately with **Run backup now**. Each snapshot is a timestamped
-directory under the configured backup path containing `pktcert.db` +
-`config.yaml` — which means CA private keys and every other secret travel
-with the backup, encrypted under the same `credential_key` recorded in
-that snapshot's `config.yaml`. Treat backup storage with the same care as
-the live server.
+directory under the configured backup path containing `pktcert.db` and a
+`RESTORE-NOTES.txt`.
+
+**`config.yaml` is deliberately NOT included.** The database holds every CA
+private key, encrypted with `credential_key` — and `credential_key` lives in
+`config.yaml`. Putting both in one snapshot stores the safe next to its key:
+a single stolen or mis-synced backup would yield every CA private key in
+plaintext, and backups are exactly the thing that ends up rsynced to a NAS or
+copied to a laptop.
+
+**This means you must back up `config.yaml` yourself, and store it somewhere
+other than the snapshots.** Without it, the CA private keys in a restored
+database cannot be decrypted and are permanently unusable. Back it up once
+and after any change — it is small and changes rarely.
+
+Set `backup_include_config` if you would rather have single-directory
+restore and accept that the snapshot then contains everything needed to
+impersonate your CAs.
+
+The downloadable full bundle (Settings → Data → Backups → export) *does*
+include `config.yaml`, because it exists to move a whole installation to a
+new host in one step. Its `RESTORE.md` says so prominently: treat that file
+as key material, move it to encrypted storage immediately, and delete it once
+the restore is done.
 
 **Restoring:**
 - Every listed snapshot has a **Restore…** link — restores directly from

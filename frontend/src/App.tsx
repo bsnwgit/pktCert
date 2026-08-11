@@ -6,6 +6,7 @@ import Login from './pages/Login'
 import { lazy, Suspense } from 'react'
 const Dashboard               = lazy(() => import('./pages/Dashboard'))
 const Certificates            = lazy(() => import('./pages/Certificates'))
+const Approvals               = lazy(() => import('./pages/Approvals'))
 const ScanTargets             = lazy(() => import('./pages/ScanTargets'))
 const CertificateAuthorities  = lazy(() => import('./pages/CertificateAuthorities'))
 const Alerts                  = lazy(() => import('./pages/Alerts'))
@@ -64,6 +65,11 @@ export default function App() {
           <Route path="/certificate-authorities" element={
             <ProtectedRoute>
               <Suspense fallback={<PageFallback />}><CertificateAuthorities /></Suspense>
+            </ProtectedRoute>
+          } />
+          <Route path="/approvals" element={
+            <ProtectedRoute>
+              <Suspense fallback={<PageFallback />}><Approvals /></Suspense>
             </ProtectedRoute>
           } />
           <Route path="/alerts" element={

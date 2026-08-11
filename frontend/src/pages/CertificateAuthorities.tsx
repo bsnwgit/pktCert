@@ -4,9 +4,12 @@ import { useAuth } from '../store/auth'
 import HelpButton from '../components/HelpButton'
 import ValidityInput from '../components/ValidityInput'
 import { downloadFile, safeFilename } from '../utils/download'
+import { RequestIntermediateModal, SignedCertModal, UploadCrlModal } from '../components/OfflineCaModals'
 
 const STATUS_STYLES: Record<string, string> = {
   active: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40',
+  disabled: 'bg-slate-500/20 text-slate-300 border border-slate-500/40',
+  pending_signature: 'bg-amber-500/20 text-amber-400 border border-amber-500/40',
   expired: 'bg-red-500/20 text-red-400 border border-red-500/40',
   revoked: 'bg-gray-500/20 text-gray-400 border border-gray-500/40',
 }
@@ -21,15 +24,22 @@ function copyToClipboard(text: string) {
 }
 
 function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[]; onClose: () => void; onSaved: () => void }) {
-  const [mode, setMode] = useState<'generate' | 'import'>('generate')
+  const [mode, setMode] = useState<'generate' | 'import' | 'offline'>('generate')
   const [name, setName] = useState('')
   const [caType, setCaType] = useState<'root' | 'intermediate'>('root')
   const [parentCaId, setParentCaId] = useState<number | ''>('')
   const [keyAlgorithm, setKeyAlgorithm] = useState('rsa')
   const [keySize, setKeySize] = useState(4096)
   const [validityDays, setValidityDays] = useState(3650)
+  const [pathLength, setPathLength] = useState('')
+  const [permittedDns, setPermittedDns] = useState('')
+  const [excludedDns, setExcludedDns] = useState('')
+  const [permittedIp, setPermittedIp] = useState('')
+  const [excludedIp, setExcludedIp] = useState('')
+  const [showConstraints, setShowConstraints] = useState(false)
   const [certPem, setCertPem] = useState('')
   const [privateKeyPem, setPrivateKeyPem] = useState('')
+  const [importPassphrase, setImportPassphrase] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -39,13 +49,23 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
     setSaving(true)
     setError('')
     try {
-      if (mode === 'generate') {
+      if (mode === 'offline') {
+        await api.importRootCert({ name, cert_pem: certPem })
+      } else if (mode === 'generate') {
+        const list = (v: string) => v.split(',').map(x => x.trim()).filter(Boolean)
         await api.generateCa({
           name, ca_type: caType, parent_ca_id: caType === 'intermediate' ? Number(parentCaId) : null,
           key_algorithm: keyAlgorithm, key_size: keySize, validity_days: validityDays,
+          path_length: pathLength === '' ? null : Number(pathLength),
+          permitted_dns: list(permittedDns), excluded_dns: list(excludedDns),
+          permitted_ip: list(permittedIp), excluded_ip: list(excludedIp),
         })
       } else {
-        await api.importCa({ name, cert_pem: certPem, private_key_pem: privateKeyPem, ca_type: caType, parent_ca_id: caType === 'intermediate' ? Number(parentCaId) : null })
+        await api.importCa({
+          name, cert_pem: certPem, private_key_pem: privateKeyPem, ca_type: caType,
+          parent_ca_id: caType === 'intermediate' ? Number(parentCaId) : null,
+          ...(importPassphrase ? { key_passphrase: importPassphrase } : {}),
+        })
       }
       onSaved()
       onClose()
@@ -63,10 +83,10 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
       <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-lg w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <h3 className="text-lg font-semibold text-white mb-4">Add Certificate Authority</h3>
         <div className="flex gap-1 bg-gray-800 border border-gray-700 rounded-xl p-1 w-fit mb-4">
-          {(['generate', 'import'] as const).map(m => (
+          {(['generate', 'import', 'offline'] as const).map(m => (
             <button key={m} onClick={() => setMode(m)}
               className={`text-sm px-4 py-1.5 rounded-lg transition-colors capitalize ${mode === m ? 'bg-gray-700 text-white' : 'text-white hover:text-white'}`}>
-              {m}
+              {m === 'offline' ? 'Offline Root' : m}
             </button>
           ))}
         </div>
@@ -75,7 +95,7 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
             <label className="block text-xs text-white mb-1">Name</label>
             <input value={name} onChange={e => setName(e.target.value)} placeholder="pktCert Internal Root CA" className={inp} />
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          {mode !== 'offline' && <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs text-white mb-1">Type</label>
               <select value={caType} onChange={e => setCaType(e.target.value as 'root' | 'intermediate')} className={inp}>
@@ -92,9 +112,27 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
                 </select>
               </div>
             )}
-          </div>
+          </div>}
 
-          {mode === 'generate' ? (
+          {mode === 'offline' ? (
+            <div className="space-y-3">
+              <p className="text-xs text-amber-300/90">
+                Register a root by its <span className="font-medium">certificate only</span>. pktCert stores no
+                private key for it and can never sign with it — which is the point: whoever compromises this
+                server still cannot produce a certificate under your root.
+              </p>
+              <div>
+                <label className="block text-xs text-white mb-1">Root certificate (PEM)</label>
+                <textarea value={certPem} onChange={e => setCertPem(e.target.value)} rows={7}
+                  placeholder="-----BEGIN CERTIFICATE-----"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-white resize-none focus:outline-none focus:ring-2 focus:ring-sky-500" />
+              </div>
+              <p className="text-xs text-slate-400">
+                Next step: use <span className="text-gray-300">Request Intermediate</span> on this CA to generate a
+                signing key here and a CSR to take to the machine holding the root key.
+              </p>
+            </div>
+          ) : mode === 'generate' ? (
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs text-white mb-1">Key algorithm</label>
@@ -117,6 +155,54 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
                 <label className="block text-xs text-white mb-1">Validity</label>
                 <ValidityInput days={validityDays} onChange={setValidityDays} className={inp} />
               </div>
+
+              <div className="col-span-2 border-t border-gray-800 pt-3">
+                <button type="button" onClick={() => setShowConstraints(v => !v)}
+                  className="text-xs text-sky-400 hover:text-sky-300">
+                  {showConstraints ? '▾' : '▸'} Constraints (optional, recommended)
+                </button>
+                {showConstraints && (
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <label className="block text-xs text-white mb-1">Maximum CAs below this one (path length)</label>
+                      <input value={pathLength} onChange={e => setPathLength(e.target.value)} type="number" min={0} max={5}
+                        placeholder={caType === 'intermediate' ? '0 (default)' : 'unlimited (default)'} className={inp} />
+                      <p className="text-xs text-slate-400 mt-1">
+                        0 means this CA can issue certificates but cannot create another CA beneath it.
+                        Intermediates default to 0.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-white mb-1">Permitted DNS domains (comma-separated)</label>
+                      <input value={permittedDns} onChange={e => setPermittedDns(e.target.value)}
+                        placeholder=".corp.example.com, .internal.example.com" className={inp} />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-white mb-1">Excluded DNS domains</label>
+                      <input value={excludedDns} onChange={e => setExcludedDns(e.target.value)}
+                        placeholder=".public.example.com" className={inp} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-white mb-1">Permitted IP ranges</label>
+                        <input value={permittedIp} onChange={e => setPermittedIp(e.target.value)}
+                          placeholder="10.0.0.0/8" className={inp} />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-white mb-1">Excluded IP ranges</label>
+                        <input value={excludedIp} onChange={e => setExcludedIp(e.target.value)}
+                          placeholder="0.0.0.0/0" className={inp} />
+                      </div>
+                    </div>
+                    <p className="text-xs text-amber-300/90">
+                      Name constraints are the strongest containment available for an internal CA: one limited to
+                      .corp.example.com cannot mint a working certificate for anything else, even if its private key
+                      is stolen. They are baked into the CA certificate at creation and cannot be changed afterwards —
+                      set them now or reissue the CA later.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             <div className="space-y-3">
@@ -130,14 +216,24 @@ function GenerateModal({ cas, onClose, onSaved }: { cas: CertificateAuthority[];
                 <textarea value={privateKeyPem} onChange={e => setPrivateKeyPem(e.target.value)} rows={5} placeholder="-----BEGIN PRIVATE KEY-----"
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-white resize-none focus:outline-none focus:ring-2 focus:ring-sky-500" />
               </div>
+              <div>
+                <label className="block text-xs text-white mb-1">Key passphrase (if the key is encrypted)</label>
+                <input type="password" value={importPassphrase} onChange={e => setImportPassphrase(e.target.value)}
+                  autoComplete="new-password" placeholder="Leave blank for an unencrypted key" className={inp} />
+                <p className="text-xs text-slate-400 mt-1">
+                  Needed for a key beginning <span className="font-mono">ENCRYPTED PRIVATE KEY</span>. pktCert
+                  decrypts it once on import and stores it under its own encryption at rest — the passphrase
+                  itself is not kept.
+                </p>
+              </div>
             </div>
           )}
 
           {error && <p className="text-sm text-red-400">{error}</p>}
           <div className="flex items-center gap-3 pt-1">
-            <button onClick={submit} disabled={saving || !name.trim() || (caType === 'intermediate' && !parentCaId) || (mode === 'import' && (!certPem.trim() || !privateKeyPem.trim()))}
+            <button onClick={submit} disabled={saving || !name.trim() || (mode !== 'offline' && caType === 'intermediate' && !parentCaId) || (mode === 'import' && (!certPem.trim() || !privateKeyPem.trim())) || (mode === 'offline' && !certPem.trim())}
               className="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors">
-              {saving ? 'Saving…' : mode === 'generate' ? 'Generate' : 'Import'}
+              {saving ? 'Saving…' : mode === 'generate' ? 'Generate' : mode === 'offline' ? 'Register Root' : 'Import'}
             </button>
             <button onClick={onClose} className="text-white hover:text-white text-sm border border-gray-700 rounded-lg px-4 py-2 transition-colors">Cancel</button>
           </div>
@@ -154,7 +250,12 @@ export default function CertificateAuthorities() {
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
   const [expanded, setExpanded] = useState<number | null>(null)
-  const [crl, setCrl] = useState<{ id: number; text: string } | null>(null)
+  const [offlineAction, setOfflineAction] = useState<
+    { kind: 'request' | 'signed' | 'crl'; ca: CertificateAuthority } | null
+  >(null)
+  const [crl, setCrl] = useState<
+    { id: number; text: string; number: number; issued: string; expires: string } | null
+  >(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -163,8 +264,23 @@ export default function CertificateAuthorities() {
 
   useEffect(() => { load() }, [load])
 
+  const handleToggleStatus = async (ca: CertificateAuthority) => {
+    const next = ca.status === 'disabled' ? 'active' : 'disabled'
+    if (next === 'disabled' && !confirm(
+      `Disable CA "${ca.name}"?\n\n` +
+      'It will stop issuing new certificates. Everything it has already issued keeps working, ' +
+      'and its CRL keeps being published — so revocations still reach the clients that need them.'
+    )) return
+    try {
+      await api.setCaStatus(ca.id, next)
+      await load()
+    } catch (e: any) {
+      alert(e.message ?? 'Could not change CA status')
+    }
+  }
+
   const handleDelete = async (ca: CertificateAuthority) => {
-    if (!confirm(`Delete CA "${ca.name}"? This only works if it has no active issued certificates.`)) return
+    if (!confirm(`Delete CA "${ca.name}"? Only possible if it has never issued a certificate.`)) return
     try {
       await api.deleteCa(ca.id)
       await load()
@@ -175,7 +291,7 @@ export default function CertificateAuthorities() {
 
   const handleCrl = async (ca: CertificateAuthority) => {
     const r = await api.getCrl(ca.id)
-    setCrl({ id: ca.id, text: r.crl_pem })
+    setCrl({ id: ca.id, text: r.crl_pem, number: r.crl_number, issued: r.this_update, expires: r.next_update })
   }
 
   const rootCas = cas.filter(c => c.ca_type === 'root')
@@ -188,7 +304,7 @@ export default function CertificateAuthorities() {
           <h1 className="text-xl font-bold text-white">Certificate Authorities</h1>
           <HelpButton title="Certificate Authorities — How It Works">
             <p>Generate a new root (self-signed) or intermediate (signed by a root you control) CA, or import an existing one. CA private keys are encrypted at rest and are never returned by the API — they're only used server-side to sign issued certificates and CRLs.</p>
-            <p>Deleting a CA is blocked while it still has active (non-revoked) issued certificates — revoke or let them expire first.</p>
+            <p><b>Disable</b> a CA to retire it: it stops issuing, but everything it already issued keeps working and its CRL keeps being published, so revocations still reach the clients that need them. That's almost always what you want.</p><p><b>Delete</b> only works on a CA that has never issued anything. Deleting one that has would destroy the key that signs its CRL, leaving every certificate it issued unrevocable while they're still deployed and trusted.</p><p>Constraints — path length and name constraints — are set when a CA is created and cannot be changed afterwards. A name-constrained CA cannot issue a working certificate outside its permitted domains even if its key is stolen.</p><p><b>Offline Root</b> registers a root by certificate alone, with its private key kept somewhere pktCert cannot reach. pktCert can never sign with it — that's the protection. Use <b>Request Intermediate</b> to generate a signing key here plus a CSR, sign that CSR on the machine holding the root key, and import the result. A compromise of this server then costs an intermediate you can revoke, not the root every machine trusts.</p><p>An offline CA can't sign its own CRL here either, so revocations under it are published with <b>Publish CRL</b> — sign the CRL where the key lives and upload it.</p>
           </HelpButton>
         </div>
         {isAdmin && (
@@ -216,12 +332,37 @@ export default function CertificateAuthorities() {
                   <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${STATUS_STYLES[ca.status]}`}>{ca.status}</span>
                   <span className="text-xs text-white">root</span>
                 </div>
-                <p className="text-xs text-white mt-0.5">Expires {fmtDate(ca.not_after)} · {ca.key_algorithm.toUpperCase()} {ca.key_size} · {childrenOf(ca.id).length} intermediate(s)</p>
+                <p className="text-xs text-white mt-0.5">
+                  Expires {fmtDate(ca.not_after)} · {ca.key_algorithm.toUpperCase()} {ca.key_size} · {childrenOf(ca.id).length} intermediate(s)
+                  {ca.path_length !== null && <> · path len {ca.path_length}</>}
+                  {ca.name_constraints && <span className="text-emerald-400"> · name-constrained</span>}
+                  {ca.key_storage === 'offline' && <span className="text-amber-300"> · offline key</span>}
+                </p>
               </div>
               <div className="flex items-center gap-3 shrink-0" onClick={e => e.stopPropagation()}>
                 <button onClick={() => copyToClipboard(ca.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Copy Cert</button>
                 <button onClick={() => downloadFile(`${safeFilename(ca.name)}.pem`, ca.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Download Cert</button>
                 <button onClick={() => handleCrl(ca)} className="text-xs text-sky-400 hover:text-sky-300">CRL</button>
+                {isAdmin && ca.key_storage === 'offline' && (
+                  <>
+                    <button onClick={() => setOfflineAction({ kind: 'request', ca })} className="text-xs text-sky-400 hover:text-sky-300">
+                      Request Intermediate
+                    </button>
+                    <button onClick={() => setOfflineAction({ kind: 'crl', ca })} className="text-xs text-sky-400 hover:text-sky-300">
+                      Publish CRL
+                    </button>
+                  </>
+                )}
+                {isAdmin && ca.status === 'pending_signature' && (
+                  <button onClick={() => setOfflineAction({ kind: 'signed', ca })} className="text-xs text-amber-300 hover:text-amber-200">
+                    Import Signed Certificate
+                  </button>
+                )}
+                {isAdmin && (
+                  <button onClick={() => handleToggleStatus(ca)} className="text-xs text-white hover:text-amber-300">
+                    {ca.status === 'disabled' ? 'Enable' : 'Disable'}
+                  </button>
+                )}
                 {isAdmin && <button onClick={() => handleDelete(ca)} className="text-xs text-white hover:text-red-400">Delete</button>}
               </div>
             </div>
@@ -241,6 +382,16 @@ export default function CertificateAuthorities() {
                       <button onClick={() => copyToClipboard(child.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Copy Cert</button>
                       <button onClick={() => downloadFile(`${safeFilename(child.name)}.pem`, child.cert_pem)} className="text-xs text-sky-400 hover:text-sky-300">Download Cert</button>
                       <button onClick={() => handleCrl(child)} className="text-xs text-sky-400 hover:text-sky-300">CRL</button>
+                      {isAdmin && child.status === 'pending_signature' && (
+                        <button onClick={() => setOfflineAction({ kind: 'signed', ca: child })} className="text-xs text-amber-300 hover:text-amber-200">
+                          Import Signed Certificate
+                        </button>
+                      )}
+                      {isAdmin && (
+                        <button onClick={() => handleToggleStatus(child)} className="text-xs text-white hover:text-amber-300">
+                          {child.status === 'disabled' ? 'Enable' : 'Disable'}
+                        </button>
+                      )}
                       {isAdmin && <button onClick={() => handleDelete(child)} className="text-xs text-white hover:text-red-400">Delete</button>}
                     </div>
                   </div>
@@ -258,10 +409,30 @@ export default function CertificateAuthorities() {
               <h3 className="text-lg font-semibold text-white">Certificate Revocation List</h3>
               <button onClick={() => copyToClipboard(crl.text)} className="text-xs text-sky-400 hover:text-sky-300">Copy</button>
             </div>
+            {/* The CRL number and validity window are encoded inside the PEM
+                below, where nobody can read them. Surface them here — the
+                number is how a relying party tells one published CRL from
+                another, and "Valid until" is when clients start rejecting
+                this copy as stale. */}
+            <div className="flex flex-wrap gap-x-5 gap-y-1 mb-3 text-xs text-white">
+              <span>CRL Number <span className="font-mono text-sky-300">{crl.number}</span></span>
+              <span>Issued <span className="text-sky-300">{fmtDate(crl.issued)}</span></span>
+              <span>Valid until <span className="text-sky-300">{fmtDate(crl.expires)}</span></span>
+            </div>
             <textarea readOnly value={crl.text} rows={10} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-white resize-none" />
             <button onClick={() => setCrl(null)} className="w-full mt-4 px-4 py-2 text-sm border border-gray-700 hover:border-gray-500 text-white rounded-lg transition-colors">Close</button>
           </div>
         </div>
+      )}
+
+      {offlineAction?.kind === 'request' && (
+        <RequestIntermediateModal parent={offlineAction.ca} onClose={() => setOfflineAction(null)} onSaved={load} />
+      )}
+      {offlineAction?.kind === 'signed' && (
+        <SignedCertModal ca={offlineAction.ca} onClose={() => setOfflineAction(null)} onSaved={load} />
+      )}
+      {offlineAction?.kind === 'crl' && (
+        <UploadCrlModal ca={offlineAction.ca} onClose={() => setOfflineAction(null)} onSaved={load} />
       )}
 
       {showAdd && <GenerateModal cas={cas} onClose={() => setShowAdd(false)} onSaved={load} />}

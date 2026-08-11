@@ -39,6 +39,10 @@ from app.api import (
     widgets as widgets_router,
     docs as docs_router,
     crl as crl_router,
+    aia as aia_router,
+    approvals as approvals_router,
+    est as est_router,
+    enrollment_profiles as enrollment_profiles_router,
 )
 
 settings = get_settings()
@@ -108,10 +112,17 @@ async def lifespan(app: FastAPI):
     app.state.scan_engine = scan_engine
     log.info("Certificate scan engine started")
 
+    from app.cert.renewal import RenewalEngine
+    renewal_engine = RenewalEngine()
+    await renewal_engine.start(settings.db_path)
+    app.state.renewal_engine = renewal_engine
+    log.info("Certificate renewal engine started")
+
     yield
 
     # -- Shutdown ----------------------------------------------------------------
     log.info("pktCert shutting down")
+    await renewal_engine.stop()
     await scan_engine.stop()
     await alert_engine.stop()
     await backup_scheduler.stop()
@@ -161,10 +172,20 @@ app.include_router(integrations_router.router, prefix="/api/integrations", tags=
 app.include_router(ai_router.router,        prefix="/api/ai",           tags=["ai"])
 app.include_router(widgets_router.router,   prefix="/api/widgets",      tags=["widgets"])
 app.include_router(docs_router.router,      prefix="/api/docs-content", tags=["docs"])
+app.include_router(approvals_router.router, prefix="/api/approvals",   tags=["approvals"])
+app.include_router(enrollment_profiles_router.router, prefix="/api/enrollment-profiles", tags=["enrollment"])
 # Deliberately outside /api and unauthenticated — see app/api/crl.py's
 # module docstring for why. Registered before the SPA catch-all below so
 # it takes priority over that route's broader "/{full_path:path}" pattern.
 app.include_router(crl_router.router,       prefix="/crl",              tags=["crl"])
+# Also deliberately outside /api and unauthenticated — a CA certificate is
+# public by definition (see app/api/aia.py). Registered before the SPA
+# catch-all so it wins over "/{full_path:path}".
+app.include_router(aia_router.router,       prefix="/aia",              tags=["aia"])
+# EST (RFC 7030). The path is fixed by the RFC — devices look at
+# /.well-known/est and nowhere else — so it sits outside /api, and before
+# the SPA catch-all.
+app.include_router(est_router.router,       prefix="/.well-known/est",  tags=["est"])
 
 # -- Health check ------------------------------------------------------------------
 

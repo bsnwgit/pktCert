@@ -18,6 +18,8 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+import aiosqlite
+
 from app.config import get_settings
 from app.dependencies import AdminUser, CurrentUser
 from app.backup import run_backup_sync, list_backups_sync, _read_backup_settings_sync
@@ -311,6 +313,26 @@ Generated: {ts}
 4. Copy config.yaml   →  {cfg.install_dir}/config.yaml
 5. Start the service:    sudo systemctl start pktcert
 
+## ⚠ THIS ARCHIVE IS KEY MATERIAL — HANDLE ACCORDINGLY
+
+pktcert.db holds every CA private key, encrypted with `credential_key`.
+config.yaml holds `credential_key`. This bundle deliberately contains both,
+because a restore is useless without them — but that means **anyone who
+obtains this file can decrypt and use your CA private keys**, and therefore
+issue certificates that every machine trusting your CAs will accept.
+
+Treat it exactly as you would the CA keys themselves:
+
+- Do not leave it in a Downloads folder, mail it, or put it in chat or a
+  ticket.
+- Move it to encrypted storage immediately, or split it: keep config.yaml
+  somewhere other than pktcert.db.
+- Delete it once the restore is done.
+
+The scheduled on-server backups under Settings → Data → Backups deliberately
+exclude config.yaml for this reason. This bundle does not, because it is
+meant to move a whole installation to a new host in one step.
+
 ## Notes
 - The JWT secret in config.yaml will invalidate existing browser sessions —
   users on the old server will need to log in again after restore.
@@ -324,8 +346,41 @@ Generated: {ts}
                 tar.add(str(f), arcname=f.name)
 
 
-@router.get("/export")
-async def export_bundle(user: AdminUser):
+class ExportRequest(BaseModel):
+    password: str
+
+
+async def _verify_export_password(user: dict, password: str) -> None:
+    """Step-up re-auth for the full backup bundle.
+
+    The bundle deliberately contains both the database and config.yaml,
+    because a restore is useless without them — but that pairing means one
+    downloaded file holds every encrypted secret AND the key that decrypts
+    them, and it lands wherever the browser puts downloads. Being logged in as
+    an admin is not a high enough bar to hand that over, so the caller
+    re-enters their current password: the same bar as revealing any other
+    stored secret.
+
+    Suite-proxied callers (X-Suite-Token, synthetic user id 0) have no local
+    password and are always rejected — they must log in as a real local admin.
+    """
+    from app.auth.local import verify_password
+
+    _settings = get_settings()
+    async with aiosqlite.connect(_settings.db_path) as _conn:
+        _conn.row_factory = aiosqlite.Row
+        async with _conn.execute(
+            "SELECT hashed_password FROM users WHERE id = ?", (user["id"],)
+        ) as _cur:
+            _row = await _cur.fetchone()
+    if not _row or not verify_password(password, _row["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Incorrect password")
+
+
+@router.post("/export")
+async def export_bundle(body: ExportRequest, user: AdminUser):
+    await _verify_export_password(user, body.password)
+
     """Download a full backup bundle as a .tar.gz archive — pktcert.db +
     config.yaml + restore instructions. Streams directly to avoid holding
     the archive in memory."""
