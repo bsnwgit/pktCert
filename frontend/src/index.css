@@ -2,8 +2,234 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Scrollbar styling */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #4B5563; }
+/* ═══════════════════════════════════════════════════════════════════════════
+   FOUNDATION THEME — global layer (shared by every pkt* app)
+
+   The palette lives in tailwind.config.js. This file owns the ambient field,
+   the line-work language, and the control restyle, so every page inherits the
+   look without its own markup being touched.
+
+   Legibility note: ink and hairline alphas here are deliberately high. On a
+   near-black field, low-alpha "elegant" greys become unreadable — secondary
+   text sits at ~.62 alpha or above, and dividers are visible warm hairlines
+   rather than hints.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --f-void:      #04060a;
+  --f-gold:      #d8b46e;
+  --f-gold-hi:   #f5e2b6;
+  --f-ice:       #8ad8ea;
+  --f-ink:       #f5f1e8;
+  --f-ink-2:     rgba(245, 241, 232, 0.74);
+  --f-ink-3:     rgba(245, 241, 232, 0.62);
+  --f-line:      rgba(216, 180, 110, 0.34);
+  --f-line-soft: rgba(216, 180, 110, 0.20);
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+
+  body {
+    background: var(--f-void);
+    color: var(--f-ink);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Ambient field — warm core glow, cool counter-glow, survey wash. Fixed so
+     it never scrolls with content. App shells sit above it at z-10. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(1200px 760px at 62% 42%, rgba(216, 180, 110, 0.06), transparent 62%),
+      radial-gradient(820px 600px at 12% 92%, rgba(110, 190, 215, 0.05), transparent 66%),
+      linear-gradient(#080b11, #04060a);
+  }
+
+  /* Scanline + vignette, kept light so it never eats contrast. Sits below
+     modals (z-50) so overlays stay clean. */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    pointer-events: none;
+    opacity: 0.34;
+    mix-blend-mode: multiply;
+    background:
+      repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.16) 0 1px, transparent 1px 3px),
+      radial-gradient(130% 100% at 50% 50%, transparent 58%, rgba(0, 0, 0, 0.5) 100%);
+  }
+
+  ::selection { background: rgba(216, 180, 110, 0.3); color: var(--f-gold-hi); }
+
+  /* ── Controls ──────────────────────────────────────────────────────────
+     Hairline boxes, no fills, gold focus — applies suite-wide with no page
+     needing to know about it. */
+  input[type="text"], input[type="password"], input[type="email"],
+  input[type="number"], input[type="search"], input[type="url"],
+  input[type="date"], input[type="datetime-local"], input[type="time"],
+  select, textarea {
+    background-color: rgba(255, 255, 255, 0.03) !important;
+    border-color: var(--f-line) !important;
+    color: var(--f-ink);
+    font-family: theme('fontFamily.mono');
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    transition: border-color 0.18s, box-shadow 0.18s, background-color 0.18s;
+  }
+  input:focus, select:focus, textarea:focus {
+    outline: none !important;
+    border-color: rgba(216, 180, 110, 0.72) !important;
+    box-shadow: 0 0 0 1px rgba(216, 180, 110, 0.2), inset 0 0 18px rgba(216, 180, 110, 0.1);
+    background-color: rgba(216, 180, 110, 0.05) !important;
+  }
+  input::placeholder, textarea::placeholder {
+    color: rgba(245, 241, 232, 0.38);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-size: 10px;
+  }
+  select option { background: #10141b; color: var(--f-ink); }
+  input[type="checkbox"], input[type="radio"] { accent-color: var(--f-gold); }
+
+  /* Disabled controls stay readable rather than vanishing */
+  input:disabled, select:disabled, textarea:disabled, button:disabled {
+    opacity: 0.55;
+  }
+
+  /* Headings pick up the wide technical tracking */
+  h1 { letter-spacing: 0.3em; text-transform: uppercase; font-weight: 300; }
+  h2 { letter-spacing: 0.22em; text-transform: uppercase; font-weight: 400; }
+  h3 { letter-spacing: 0.18em; text-transform: uppercase; font-weight: 400; }
+
+  /* Table headers read as instrument labels */
+  thead th {
+    font-size: 9px !important;
+    letter-spacing: 0.26em;
+    text-transform: uppercase;
+    color: rgba(245, 241, 232, 0.6) !important;
+    font-weight: 500 !important;
+  }
+  tbody td { font-size: 12px; }
+  tbody tr { border-color: rgba(216, 180, 110, 0.16); }
+
+  .font-mono, code, pre { font-variant-numeric: tabular-nums; }
+
+  /* Horizontal rules are structure, so they must be seen */
+  hr { border-color: var(--f-line); }
+
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(216, 180, 110, 0.26); }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(216, 180, 110, 0.44); }
+}
+
+@layer components {
+  /* ── Micro-label ────────────────────────────────────────────────────── */
+  .f-lbl {
+    @apply text-[9px] uppercase font-medium whitespace-nowrap;
+    letter-spacing: 0.3em;
+    color: var(--f-ink-3);
+  }
+  .f-lbl-gold { color: rgba(233, 205, 149, 0.92); }
+
+  /* ── Panel ──────────────────────────────────────────────────────────── */
+  .f-panel {
+    @apply relative border;
+    border-color: var(--f-line-soft);
+    background: rgba(255, 255, 255, 0.016);
+  }
+  .f-panel-alarm {
+    border-color: rgba(255, 107, 94, 0.42);
+    box-shadow: inset 0 0 44px rgba(255, 107, 94, 0.07);
+  }
+
+  .f-head {
+    @apply flex items-center gap-3.5 px-4 py-3 border-b;
+    border-color: var(--f-line-soft);
+  }
+
+  /* ── Corner ticks — instrument brackets, revealed on hover ──────────── */
+  .f-tick::before, .f-tick::after {
+    content: "";
+    position: absolute;
+    width: 7px;
+    height: 7px;
+    opacity: 0;
+    transition: opacity 0.22s;
+    border-color: var(--f-gold);
+  }
+  .f-tick::before { top: 5px; left: 5px; border-top: 1px solid; border-left: 1px solid; }
+  .f-tick::after { bottom: 5px; right: 5px; border-bottom: 1px solid; border-right: 1px solid; }
+  .f-tick:hover::before, .f-tick:hover::after { opacity: 0.9; }
+  .f-tick-on::before, .f-tick-on::after { opacity: 0.9; }
+
+  /* ── Readout numeral ────────────────────────────────────────────────── */
+  .f-num {
+    @apply font-mono font-light leading-none whitespace-nowrap;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  .f-num-gold { color: var(--f-gold-hi); text-shadow: 0 0 26px rgba(216, 180, 110, 0.4); }
+  .f-num-alarm { color: #ff8478; text-shadow: 0 0 26px rgba(255, 107, 94, 0.38); }
+  .f-num-ice { color: var(--f-ice); text-shadow: 0 0 26px rgba(126, 207, 226, 0.34); }
+
+  /* ── Fading hairline rule ───────────────────────────────────────────── */
+  .f-rule {
+    @apply flex-1 h-px;
+    background: linear-gradient(90deg, var(--f-line), transparent);
+  }
+
+  /* ── Chip ───────────────────────────────────────────────────────────── */
+  .f-chip {
+    @apply inline-flex items-center border px-2 py-0.5 text-[8.5px] uppercase whitespace-nowrap;
+    letter-spacing: 0.2em;
+    border-color: var(--f-line);
+    color: rgba(245, 241, 232, 0.78);
+  }
+  .f-chip-ice { border-color: rgba(138, 216, 234, 0.46); color: var(--f-ice); }
+  .f-chip-gold { border-color: rgba(216, 180, 110, 0.5); color: var(--f-gold-hi); }
+
+  /* ── Status dots ────────────────────────────────────────────────────── */
+  .f-dot { @apply relative block rounded-full; }
+  .f-dot-up { background: #7ee0a8; box-shadow: 0 0 8px rgba(126, 224, 168, 0.85); }
+  .f-dot-warn { background: #f3c265; box-shadow: 0 0 8px rgba(243, 194, 101, 0.85); }
+  .f-dot-down { background: #ff6b5e; box-shadow: 0 0 9px rgba(255, 107, 94, 0.9); }
+  .f-dot-off { background: rgba(245, 241, 232, 0.32); }
+}
+
+@layer utilities {
+  .f-breathe { animation: f-breathe 2.6s ease-in-out infinite; }
+  .f-spin-slow { animation: f-spin 46s linear infinite; transform-origin: 50% 50%; }
+  .f-spin-rev { animation: f-spin 32s linear reverse infinite; transform-origin: 50% 50%; }
+  .f-glow-gold { box-shadow: 0 0 14px rgba(216, 180, 110, 0.22); }
+}
+
+@keyframes f-breathe { 0%, 100% { opacity: 1 } 50% { opacity: 0.3 } }
+@keyframes f-spin { to { transform: rotate(360deg) } }
+
+/* ── Legibility backstops ────────────────────────────────────────────────
+   A few very dim utilities are scattered through the older pages. Rather
+   than hunt every occurrence, lift them here so nothing drops below a
+   comfortable reading contrast on the dark field. */
+.text-gray-600 { color: #8b9099 !important; }
+.text-gray-700 { color: #7c828c !important; }
+.text-gray-800 { color: #767c86 !important; }
+.text-gray-900 { color: #727880 !important; }
+
+/* …except inside a deliberately light surface (printable reports), where the
+   dark-on-light relationship is the correct one and must not be lifted. */
+.bg-white.text-gray-900, .bg-white .text-gray-900,
+.bg-white .text-gray-800, .bg-white .text-gray-700, .bg-white .text-gray-600 {
+  color: #1a1a1a !important;
+}
+.bg-white, .bg-white * { border-color: rgba(0, 0, 0, 0.18); }
+@media print {
+  body::before, body::after { display: none !important; }
+}
