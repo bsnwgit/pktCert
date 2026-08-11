@@ -60,9 +60,13 @@ PROVIDER_TIMEOUT_SECONDS = 180
 _OTHER_APPS = ["pktsnmp", "pktflow", "pktlog", "pkthub", "pktwifi", "pktnode", "pktpcap", "pktsecurity"]
 
 _INJECTION_RE = re.compile(
-    r"ignore\s+(all|any|the)?\s*(previous|prior|above|earlier)?\s*(instructions|rules|prompt)"
-    r"|disregard\s+(all|any|the)?\s*(previous|prior|above|earlier)?\s*(instructions|rules|prompt)"
-    r"|forget\s+(all|any|the)?\s*(previous|prior|above|earlier)?\s*(instructions|rules|prompt)"
+    # Each optional word carries its own trailing \s+, and the groups are
+    # non-capturing. Written as `\s+(word)?\s*(word)?\s*` a run of spaces can
+    # be split between the quantifiers in many ways, which is what made this
+    # backtrack polynomially; this form gives exactly one way to match a run.
+    r"ignore\s+(?:(?:all|any|the)\s+)?(?:(?:previous|prior|above|earlier)\s+)?(?:instructions|rules|prompt)"
+    r"|disregard\s+(?:(?:all|any|the)\s+)?(?:(?:previous|prior|above|earlier)\s+)?(?:instructions|rules|prompt)"
+    r"|forget\s+(?:(?:all|any|the)\s+)?(?:(?:previous|prior|above|earlier)\s+)?(?:instructions|rules|prompt)"
     r"|you\s+are\s+now\s+(a|an)"
     r"|pretend\s+(you\s+are|to\s+be)"
     r"|new\s+system\s+prompt"
