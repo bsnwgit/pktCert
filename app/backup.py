@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import shutil
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -69,10 +70,51 @@ def run_backup_sync(db_path: str) -> dict:
     snap_dir.mkdir(parents=True, exist_ok=True)
     result["path"] = str(snap_dir)
 
+    # Must go through SQLite's own online-backup API, never a file copy.
+    #
+    # The database runs in WAL mode, so at any instant the committed state is
+    # split between the .db file and its -wal sidecar. A plain copy of the .db
+    # alone captures neither a consistent snapshot nor the most recent commits
+    # — it can silently produce a torn or stale backup, the worst possible
+    # failure mode for the one artifact you reach for in an emergency. The
+    # backup API takes a read lock and copies real pages, yielding a
+    # standalone, internally consistent database.
+    #
+    # The result is verified before being accepted: a backup that cannot pass
+    # integrity_check is worse than no backup, because it looks like one.
     db_src = Path(db_path)
     if db_src.exists():
-        shutil.copy2(str(db_src), str(snap_dir / "pktcert.db"))
-        result["files"].append("pktcert.db")
+        dest = snap_dir / "pktcert.db"
+        src_conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            dst_conn = sqlite3.connect(str(dest))
+            try:
+                src_conn.backup(dst_conn)
+            finally:
+                dst_conn.close()
+        finally:
+            src_conn.close()
+
+        check = "unknown"
+        try:
+            verify = sqlite3.connect(f"file:{dest}?mode=ro", uri=True)
+            try:
+                row = verify.execute("PRAGMA integrity_check").fetchone()
+                check = row[0] if row else "no result"
+            finally:
+                verify.close()
+        except Exception as e:
+            check = f"verification failed: {e}"
+
+        if check == "ok":
+            result["files"].append("pktcert.db")
+        else:
+            log.error(
+                f"Backup verification FAILED for {dest} — integrity_check said: {check}. "
+                f"Keeping the file for inspection but not counting it as a usable backup."
+            )
+            result["status"] = "sqlite_backup_unverified"
+            result["sqlite_integrity"] = check
 
     # config.yaml is EXCLUDED by default, and that default matters.
     #
