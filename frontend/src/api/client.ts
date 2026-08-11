@@ -254,6 +254,7 @@ export const api = {
   scanTargetNow: (id: number) => request<{ status: string; certificates_found: number; hosts_scanned: number; errors: number }>(`/scan-targets/${id}/scan-now`, { method: 'POST' }),
 
   // -- Alerts ---------------------------------------------------------------------
+  getAlertConditions: () => request<AlertCondition[]>('/alerts/conditions'),
   getAlertRules: () => request<AlertRule[]>('/alerts/rules'),
   createAlertRule: (body: Partial<AlertRule>) => request<AlertRule>('/alerts/rules', { method: 'POST', body: JSON.stringify(body) }),
   updateAlertRule: (id: number, body: Partial<AlertRule>) => request<AlertRule>(`/alerts/rules/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
@@ -561,6 +562,26 @@ export interface CertRequest {
   resulting_certificate_id: number | null
 }
 
+export interface AlertConditionParam {
+  key: string
+  label: string
+  type: 'int' | 'string' | 'multiselect'
+  default: unknown
+  hint: string
+  options: string[]
+  min: number | null
+  max: number | null
+}
+
+export interface AlertCondition {
+  key: string
+  label: string
+  description: string
+  target: 'certificate' | 'ca' | 'scan_target' | 'system'
+  scoped: boolean
+  params: AlertConditionParam[]
+}
+
 export interface EnrollmentProfile {
   id: number
   name: string
@@ -670,6 +691,8 @@ export interface AlertRule {
   cooldown_min: number
   channels: string[]
   created_at: string
+  params: Record<string, unknown>
+  scope: Record<string, unknown>
 }
 
 export interface AlertEvent {

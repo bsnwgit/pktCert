@@ -6,15 +6,11 @@ enabled alert_rules against the current state of certificates /
 certificate_authorities / scan_targets, and opens/keeps-open/
 auto-resolves alert_events.
 
-Supported condition_type values:
-  cert_expiring             - a valid certificate's not_after is within
-                               `threshold` days (default 30)
-  cert_expired               - a certificate's not_after has already passed
-  cert_revoked                - a certificate was revoked (fires once, no
-                               auto-resolve — revocation is terminal)
-  ca_expiring                 - a CA's not_after is within `threshold` days
-                               (default 90 — CAs need longer lead time)
-  scan_target_unreachable     - a scan target's last_status = 'error'
+What each rule watches for lives in app/cert/alert_conditions.py, along with
+the parameters that condition accepts — expiry windows, minimum key sizes,
+which signature algorithms count as broken, and so on. Conditions only report
+what currently matches; every decision about opening, keeping and resolving an
+event is made here, so adding a condition needs no knowledge of this file.
 
 A newly opened event is dispatched to whichever channels its rule enables
 (app/notifications.py), with every outcome recorded in notification_log.
@@ -39,6 +35,7 @@ from typing import Optional
 import aiosqlite
 
 from app import notifications
+from app.cert import alert_conditions
 
 log = logging.getLogger("pktcert.alerts")
 
@@ -102,9 +99,7 @@ class AlertEngine:
                 rules = await cur.fetchall()
 
             for rule in rules:
-                handler = _HANDLERS.get(rule["condition_type"])
-                if handler:
-                    await handler(db, rule)
+                await _evaluate_rule(db, rule)
             await db.commit()
 
 
@@ -115,13 +110,25 @@ async def _fire_or_keep(db: aiosqlite.Connection, rule, certificate_id=None, ca_
     window (so a flapping condition doesn't reopen a new event every
     evaluation tick). A newly opened event is then dispatched to whichever
     channels the rule has enabled."""
-    async with db.execute(
-        """SELECT id FROM alert_events
-           WHERE rule_id = ? AND active = 1
-             AND certificate_id IS ? AND ca_id IS ?""",
-        (rule["id"], certificate_id, ca_id),
-    ) as cur:
-        existing = await cur.fetchone()
+    # Some conditions have no certificate or CA to key on — a scan target that
+    # won't answer, an address failing enrolment. For those the message *is*
+    # the identity, so deduplicating on the ids alone would collapse every
+    # unreachable target into one alert and hide all but the first.
+    targetless = certificate_id is None and ca_id is None
+    if targetless:
+        async with db.execute(
+            "SELECT id FROM alert_events WHERE rule_id = ? AND active = 1 AND message = ?",
+            (rule["id"], message),
+        ) as cur:
+            existing = await cur.fetchone()
+    else:
+        async with db.execute(
+            """SELECT id FROM alert_events
+               WHERE rule_id = ? AND active = 1
+                 AND certificate_id IS ? AND ca_id IS ?""",
+            (rule["id"], certificate_id, ca_id),
+        ) as cur:
+            existing = await cur.fetchone()
     if existing:
         return
 
@@ -179,13 +186,30 @@ async def _dispatch(db: aiosqlite.Connection, rule, event_id: int, message: str,
         )
 
 
-async def _auto_resolve(db: aiosqlite.Connection, rule, still_bad_cert_ids: set, still_bad_ca_ids: set):
+async def _auto_resolve(db: aiosqlite.Connection, rule, still_bad_cert_ids: set,
+                        still_bad_ca_ids: set, still_bad_messages: set | None = None):
+    """Close alerts whose cause has gone away.
+
+    Targetless alerts reconcile on their message, for the same reason they
+    deduplicate on it: there is no id to compare. Without that they resolved
+    themselves on the very tick that opened them — nothing to match against
+    meant "nothing still wrong" — so a scan target could be down for a week
+    and re-alert every minute without an alert ever staying open.
+    """
     async with db.execute(
-        "SELECT id, certificate_id, ca_id FROM alert_events WHERE rule_id = ? AND active = 1",
+        "SELECT id, certificate_id, ca_id, message FROM alert_events WHERE rule_id = ? AND active = 1",
         (rule["id"],),
     ) as cur:
         active = await cur.fetchall()
     for row in active:
+        if row["certificate_id"] is None and row["ca_id"] is None:
+            if still_bad_messages is not None and row["message"] not in still_bad_messages:
+                await db.execute(
+                    """UPDATE alert_events SET active = 0, resolved = 1, auto_resolved = 1,
+                       resolved_at = datetime('now') WHERE id = ?""",
+                    (row["id"],),
+                )
+            continue
         cert_ok = row["certificate_id"] is None or row["certificate_id"] not in still_bad_cert_ids
         ca_ok = row["ca_id"] is None or row["ca_id"] not in still_bad_ca_ids
         if cert_ok and ca_ok:
@@ -196,92 +220,38 @@ async def _auto_resolve(db: aiosqlite.Connection, rule, still_bad_cert_ids: set,
             )
 
 
-async def _check_cert_expiring(db: aiosqlite.Connection, rule) -> None:
-    threshold_days = int(rule["threshold"] or 30)
-    async with db.execute(
-        """SELECT id, common_name, not_after FROM certificates
-           WHERE status NOT IN ('revoked', 'expired', 'superseded')
-             AND not_after IS NOT NULL
-             AND not_after < datetime('now', ?)
-             AND not_after >= datetime('now')""",
-        (f"+{threshold_days} days",),
-    ) as cur:
-        rows = await cur.fetchall()
-    bad_ids = set()
-    for r in rows:
-        bad_ids.add(r["id"])
-        await _fire_or_keep(db, rule, certificate_id=r["id"],
-                             message=f"Certificate '{r['common_name']}' expires {r['not_after']}")
-    await _auto_resolve(db, rule, bad_ids, set())
+async def _evaluate_rule(db: aiosqlite.Connection, rule) -> None:
+    """Run one rule through its condition and reconcile the open alerts.
 
+    Conditions live in app/cert/alert_conditions.py and only ever *report* —
+    they return the things currently matching. Everything about opening,
+    keeping, and resolving events is decided here, so a new condition needs no
+    knowledge of the alerting machinery.
+    """
+    entry = alert_conditions.EVALUATORS.get(rule["condition_type"])
+    if entry is None:
+        return
+    evaluate, target = entry
 
-async def _check_cert_expired(db: aiosqlite.Connection, rule) -> None:
-    async with db.execute(
-        """SELECT id, common_name, not_after FROM certificates
-           WHERE status != 'superseded'
-             AND (status = 'expired' OR (not_after IS NOT NULL AND not_after < datetime('now')))"""
-    ) as cur:
-        rows = await cur.fetchall()
-    bad_ids = set()
-    for r in rows:
-        bad_ids.add(r["id"])
-        await _fire_or_keep(db, rule, certificate_id=r["id"],
-                             message=f"Certificate '{r['common_name']}' expired {r['not_after']}")
-    await _auto_resolve(db, rule, bad_ids, set())
+    try:
+        matches = await evaluate(db, rule)
+    except Exception as e:
+        log.error(f"Alert rule '{rule['name']}' ({rule['condition_type']}) failed to evaluate: {e}")
+        return
 
+    still_bad_certs, still_bad_cas, still_bad_messages = set(), set(), set()
+    for target_id, message in matches:
+        still_bad_messages.add(message)
+        certificate_id = target_id if target == "certificate" else None
+        ca_id = target_id if target == "ca" else None
+        if certificate_id is not None:
+            still_bad_certs.add(certificate_id)
+        if ca_id is not None:
+            still_bad_cas.add(ca_id)
+        await _fire_or_keep(db, rule, certificate_id=certificate_id, ca_id=ca_id, message=message)
 
-async def _check_cert_revoked(db: aiosqlite.Connection, rule) -> None:
-    # Revocation is terminal — fire once per cert, never auto-resolve.
-    async with db.execute(
-        "SELECT id, common_name, revoked_at, revoked_reason FROM certificates WHERE status = 'revoked'"
-    ) as cur:
-        rows = await cur.fetchall()
-    for r in rows:
-        reason = f" ({r['revoked_reason']})" if r["revoked_reason"] else ""
-        await _fire_or_keep(db, rule, certificate_id=r["id"],
-                             message=f"Certificate '{r['common_name']}' was revoked{reason}")
-
-
-async def _check_ca_expiring(db: aiosqlite.Connection, rule) -> None:
-    threshold_days = int(rule["threshold"] or 90)
-    async with db.execute(
-        """SELECT id, name, not_after FROM certificate_authorities
-           WHERE status = 'active' AND not_after < datetime('now', ?)
-             AND not_after >= datetime('now')""",
-        (f"+{threshold_days} days",),
-    ) as cur:
-        rows = await cur.fetchall()
-    bad_ids = set()
-    for r in rows:
-        bad_ids.add(r["id"])
-        await _fire_or_keep(db, rule, ca_id=r["id"],
-                             message=f"CA '{r['name']}' expires {r['not_after']}")
-    await _auto_resolve(db, rule, set(), bad_ids)
-
-
-async def _check_scan_target_unreachable(db: aiosqlite.Connection, rule) -> None:
-    async with db.execute(
-        "SELECT id, name, last_error FROM scan_targets WHERE enabled = 1 AND last_status = 'error'"
-    ) as cur:
-        rows = await cur.fetchall()
-    # scan_targets isn't certificate/CA-scoped, so track "still bad" via a
-    # synthetic certificate_id-shaped bucket isn't applicable — use ca_id
-    # slot as a free integer key space is unsafe (collides with real CAs),
-    # so this condition simply fires per-target without an auto-resolve
-    # target set; the next tick's fire_or_keep no-ops once the target
-    # recovers because the WHERE clause above stops returning that row,
-    # leaving cleanup to the acknowledge/resolve UI.
-    for r in rows:
-        await _fire_or_keep(db, rule, message=f"Scan target '{r['name']}' unreachable: {r['last_error'] or 'unknown error'}")
-
-
-_HANDLERS = {
-    "cert_expiring": _check_cert_expiring,
-    "cert_expired": _check_cert_expired,
-    "cert_revoked": _check_cert_revoked,
-    "ca_expiring": _check_ca_expiring,
-    "scan_target_unreachable": _check_scan_target_unreachable,
-}
+    if rule["condition_type"] not in alert_conditions.TERMINAL:
+        await _auto_resolve(db, rule, still_bad_certs, still_bad_cas, still_bad_messages)
 
 
 async def run_cleanup_once() -> dict:
