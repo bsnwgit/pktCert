@@ -79,9 +79,22 @@ _INJECTION_RE = re.compile(
 _OTHER_APP_RE = re.compile(r"\b(" + "|".join(_OTHER_APPS) + r")\b", re.IGNORECASE)
 
 
+# The injection patterns chain \s+(alt)?\s*(alt)?\s* — on a long run of
+# whitespace that backtracks polynomially, so a multi-megabyte question of
+# spaces would burn CPU here before the LLM is ever consulted. Questions are
+# bounded first: this is a scope pre-check, and nothing legitimate approaches
+# the cap.
+_MAX_QUESTION_CHARS = 4000
+
+
 def _scope_violation(question: str) -> str | None:
     """Deterministic pre-check run before the LLM ever sees the question.
     Returns a refusal message if the question should be blocked, else None."""
+    if len(question) > _MAX_QUESTION_CHARS:
+        return (
+            f"That question is too long — please keep it under {_MAX_QUESTION_CHARS:,} "
+            "characters."
+        )
     if _INJECTION_RE.search(question):
         return (
             "I can only help with pktCert itself — certificate discovery, expiration, and "
