@@ -167,9 +167,12 @@ async def import_rules_csv(user: AdminUser, file: UploadFile = File(...), db: ai
                 (name, condition_type, threshold, severity, int(enabled), 0, json.dumps(channels)),
             )
             created += 1
-        except aiosqlite.IntegrityError as e:
+        except aiosqlite.IntegrityError:
+            # The driver's message names the table and constraint. The row
+            # number plus a plain reason is what actually helps someone fixing
+            # a CSV, and it doesn't hand out the schema.
             skipped += 1
-            errors.append(f"Row {i}: {e}")
+            errors.append(f"Row {i}: a rule named {name!r} already exists")
 
     await db.commit()
     return {"created": created, "skipped": skipped, "errors": errors}
