@@ -15,6 +15,8 @@ import json
 from urllib.parse import quote
 
 import aiosqlite
+import logging
+
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -28,6 +30,8 @@ from app.cert.crypto import decrypt_str, encrypt_str
 # any provider.
 _TEST_IP = "8.8.8.8"
 _TEST_DOMAIN = "example.com"
+
+log = logging.getLogger("pktcert.api.user_api_keys")
 
 router = APIRouter()
 
@@ -304,7 +308,10 @@ async def test_api_key(provider: str, body: ApiKeyIn, _: CurrentUser) -> dict:
                     return {"status": "ok", "detail": "Key is valid"}
                 return {"status": "failed", "detail": f"Censys returned HTTP {resp.status_code}: {resp.text[:200]}"}
 
-    except httpx.RequestError as exc:
-        return {"status": "failed", "detail": f"Request error: {exc}"}
+    except httpx.RequestError:
+        # httpx puts the full request URL in its exception text; that URL can
+        # carry the key being tested, so it must not come back to the browser.
+        log.exception("provider key check failed")
+        return {"status": "failed", "detail": "Request error contacting the provider"}
 
     return {"status": "failed", "detail": "Unhandled provider"}
