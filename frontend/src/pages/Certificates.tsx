@@ -14,8 +14,23 @@ const STATUS_STYLES: Record<string, string> = {
   expiring: 'bg-amber-500/20 text-amber-400 border border-amber-500/40',
   expired: 'bg-red-500/20 text-red-400 border border-red-500/40',
   revoked: 'bg-gray-500/20 text-gray-400 border border-gray-500/40',
+  superseded: 'bg-slate-500/20 text-slate-300 border border-slate-500/40',
   unknown: 'bg-sky-500/20 text-sky-400 border border-sky-500/40',
 }
+
+// RFC 5280 §5.3.1 reasonCode values, published in the CRL entry. Ordered by
+// how often they're actually the right answer, not by their numeric code.
+const REVOCATION_REASONS: { value: string; label: string }[] = [
+  { value: 'unspecified', label: 'Unspecified' },
+  { value: 'superseded', label: 'Superseded — replaced by another certificate' },
+  { value: 'cessation_of_operation', label: 'Cessation of operation — service retired' },
+  { value: 'key_compromise', label: 'Key compromise — the private key was exposed' },
+  { value: 'affiliation_changed', label: 'Affiliation changed — subject details no longer correct' },
+  { value: 'privilege_withdrawn', label: 'Privilege withdrawn — no longer authorised' },
+  { value: 'ca_compromise', label: 'CA compromise — the issuing CA key was exposed' },
+  { value: 'certificate_hold', label: 'Certificate hold — temporarily suspended' },
+  { value: 'aa_compromise', label: 'AA compromise — attribute authority exposed' },
+]
 
 const PAGE_SIZE = 25
 
@@ -47,6 +62,8 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [issued, setIssued] = useState<Certificate | null>(null)
+  const [approvalPending, setApprovalPending] = useState<string | null>(null)
+  const [justification, setJustification] = useState('')
   const [pending, setPending] = useState<PendingAction | null>(null)
 
   const submit = async () => {
@@ -62,7 +79,15 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
       const cert = await api.issueCertificate({
         common_name: commonName.trim(), sans: sanList, ca_id: Number(caId), template_id: Number(templateId),
         ...(protectKey && keyPassphrase ? { key_passphrase: keyPassphrase } : {}),
+        ...(justification.trim() ? { justification: justification.trim() } : {}),
       })
+      if (cert.pending_approval) {
+        // Separation of duties is on: nothing was issued, and there is no key
+        // to show. The certificate is created when a second admin approves.
+        setApprovalPending(cert.detail ?? 'Submitted for approval.')
+        onIssued()
+        return
+      }
       setIssued(cert)
       onIssued()
     } catch (e: any) {
@@ -77,7 +102,20 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 py-8 px-4" onClick={onClose}>
       <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-lg w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        {!issued ? (
+        {approvalPending ? (
+          <>
+            <h3 className="text-lg font-semibold text-white mb-2">Awaiting approval</h3>
+            <p className="text-sm text-white mb-4">{approvalPending}</p>
+            <p className="text-xs text-white/70 mb-4">
+              No certificate and no private key exist yet — both are created at the moment another admin
+              approves. Track it on the Approvals page.
+            </p>
+            <button onClick={onClose}
+              className="w-full px-4 py-2 text-sm border border-gray-700 hover:border-gray-500 text-white rounded-lg transition-colors">
+              Close
+            </button>
+          </>
+        ) : !issued ? (
           <>
             <h3 className="text-lg font-semibold text-white mb-4">Issue Certificate</h3>
             <div className="space-y-4">
@@ -128,6 +166,11 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
                     </p>
                   </div>
                 )}
+              </div>
+              <div>
+                <label className="block text-xs text-white mb-1">Justification (optional)</label>
+                <input value={justification} onChange={e => setJustification(e.target.value)}
+                  placeholder="Shown to whoever approves this, if approval is required" className={inp} />
               </div>
               {error && <p className="text-sm text-red-400">{error}</p>}
               <div className="flex items-center gap-3 pt-1">
@@ -194,11 +237,21 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
 // caller re-enters their current password every single time (no caching
 // across actions), and each is audit-logged server-side (cert_events).
 
-function DetailModal({ cert, isAdmin, onClose, onRevoked }: { cert: Certificate; isAdmin: boolean; onClose: () => void; onRevoked: () => void }) {
+function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate; isAdmin: boolean; onClose: () => void; onChanged: () => void }) {
   const [pem, setPem] = useState<{ fmt: string; text: string } | null>(null)
   const [pending, setPending] = useState<PendingAction | null>(null)
   const [revoking, setRevoking] = useState(false)
   const [reason, setReason] = useState('')
+  const [reasonCode, setReasonCode] = useState('unspecified')
+  const [renewing, setRenewing] = useState(false)
+  const [renewedKey, setRenewedKey] = useState<{ id: number; pem?: string } | null>(null)
+  const [autoRenew, setAutoRenew] = useState(cert.auto_renew)
+  const [autoRenewDays, setAutoRenewDays] = useState(String(cert.auto_renew_days))
+
+  // Only certificates this pktCert issued can be renewed — renewal reuses the
+  // original CA and template, neither of which exists for a discovered or
+  // externally-issued cert.
+  const renewable = cert.source === 'issued' && cert.ca_id !== null && cert.template_id !== null
 
   const filenameBase = safeFilename(cert.common_name)
 
@@ -236,12 +289,47 @@ function DetailModal({ cert, isAdmin, onClose, onRevoked }: { cert: Certificate;
     },
   })
 
+  const doRenew = async () => {
+    if (!confirm(
+      `Renew '${cert.common_name}'?\n\n` +
+      'A new certificate and a new private key will be issued from the same CA and template. ' +
+      'The current certificate stays valid and is marked superseded — it is NOT revoked, so ' +
+      'the running service keeps working until you install the replacement.'
+    )) return
+    setRenewing(true)
+    try {
+      const res = await api.renewCertificate(cert.id)
+      setRenewedKey({ id: res.id, pem: res.private_key_pem })
+      onChanged()
+    } catch (e: any) {
+      alert(e.message ?? 'Renewal failed')
+    } finally {
+      setRenewing(false)
+    }
+  }
+
+  const toggleAutoRenew = async () => {
+    const next = !autoRenew
+    const days = Math.max(1, parseInt(autoRenewDays, 10) || 30)
+    try {
+      await api.setAutoRenew(cert.id, next, days)
+      setAutoRenew(next)
+      setAutoRenewDays(String(days))
+      onChanged()
+    } catch (e: any) {
+      alert(e.message ?? 'Could not change auto-renewal')
+    }
+  }
+
   const doRevoke = async () => {
     if (!confirm(`Revoke certificate '${cert.common_name}'? This cannot be undone.`)) return
     setRevoking(true)
     try {
-      await api.revokeCertificate(cert.id, reason)
-      onRevoked()
+      const res = await api.revokeCertificate(cert.id, reason, reasonCode)
+      onChanged()
+      if (res?.pending_approval) {
+        alert(res.detail ?? 'Revocation submitted for approval — the certificate is still valid until approved.')
+      }
       onClose()
     } finally {
       setRevoking(false)
@@ -270,7 +358,17 @@ function DetailModal({ cert, isAdmin, onClose, onRevoked }: { cert: Certificate;
           {cert.host && <div><span className="text-white">Host</span><p className="text-white font-mono">{cert.host}:{cert.port}</p></div>}
           <div className="col-span-2"><span className="text-white">Fingerprint (SHA-256)</span><p className="text-white text-xs font-mono break-all">{cert.fingerprint_sha256}</p></div>
           {cert.revoked_at && (
-            <div className="col-span-2"><span className="text-red-400">Revoked</span><p className="text-white text-xs">{fmtDate(cert.revoked_at)} — {cert.revoked_reason || 'no reason given'}</p></div>
+            <div className="col-span-2"><span className="text-red-400">Revoked</span><p className="text-white text-xs">
+              {fmtDate(cert.revoked_at)}
+              {cert.revoked_reason_code ? ` — ${REVOCATION_REASONS.find(r => r.value === cert.revoked_reason_code)?.label ?? cert.revoked_reason_code}` : ''}
+              {cert.revoked_reason ? ` (${cert.revoked_reason})` : ''}
+            </p></div>
+          )}
+          {cert.renewed_to_id && (
+            <div className="col-span-2"><span className="text-white">Renewed</span><p className="text-white text-xs">Superseded by certificate #{cert.renewed_to_id} — still valid until it expires, and not revoked</p></div>
+          )}
+          {cert.renewed_from_id && (
+            <div className="col-span-2"><span className="text-white">Renewal of</span><p className="text-white text-xs">Replaces certificate #{cert.renewed_from_id}</p></div>
           )}
         </div>
 
@@ -308,14 +406,68 @@ function DetailModal({ cert, isAdmin, onClose, onRevoked }: { cert: Certificate;
           </div>
         )}
 
+        {isAdmin && renewable && cert.status !== 'revoked' && !cert.renewed_to_id && (
+          <div className="border-t border-gray-800 pt-4 mb-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              <button onClick={doRenew} disabled={renewing}
+                className="text-sm bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded-lg px-4 py-2 transition-colors">
+                {renewing ? 'Renewing…' : 'Renew Now'}
+              </button>
+              <label className="flex items-center gap-2 text-xs text-white">
+                <input type="checkbox" checked={autoRenew} onChange={toggleAutoRenew} className="accent-sky-500" />
+                Auto-renew within
+              </label>
+              <input type="number" min={1} max={365} value={autoRenewDays}
+                onChange={e => setAutoRenewDays(e.target.value)}
+                onBlur={() => { if (autoRenew) toggleAutoRenew() }}
+                className="w-16 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-xs text-white" />
+              <span className="text-xs text-white">days of expiry</span>
+            </div>
+            <p className="text-xs text-white/70 mt-2">
+              Renewing issues a new certificate and a new private key from the same CA and template.
+              The current one is marked superseded but stays valid and is <span className="text-amber-300">not</span> revoked,
+              so the running service keeps working until you install the replacement — revoke it yourself once you have.
+            </p>
+          </div>
+        )}
+
+        {renewedKey && (
+          <div className="mb-4 border border-sky-800/60 rounded-lg p-3">
+            <p className="text-xs text-sky-300 mb-2">
+              Renewed as certificate #{renewedKey.id}. This is the only time the new private key is shown without
+              re-entering your password — download it now, or retrieve it later from the new certificate's detail view.
+            </p>
+            {renewedKey.pem && (
+              <div className="flex items-center gap-3">
+                <button onClick={() => copyToClipboard(renewedKey.pem!)} className="text-xs text-sky-400 hover:text-sky-300">Copy key</button>
+                <button onClick={() => downloadFile(`${filenameBase}-renewed-key.pem`, renewedKey.pem!)} className="text-xs text-sky-400 hover:text-sky-300">Download key</button>
+              </div>
+            )}
+          </div>
+        )}
+
         {isAdmin && cert.status !== 'revoked' && (
-          <div className="border-t border-gray-800 pt-4 flex items-center gap-2 flex-wrap">
-            <input value={reason} onChange={e => setReason(e.target.value)} placeholder="Revocation reason (optional)"
-              className="flex-1 min-w-[200px] bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" />
-            <button onClick={doRevoke} disabled={revoking}
-              className="text-sm bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg px-4 py-2 transition-colors">
-              {revoking ? 'Revoking…' : 'Revoke'}
-            </button>
+          <div className="border-t border-gray-800 pt-4 space-y-2">
+            <div>
+              <label className="block text-xs text-white mb-1">Revocation reason (published in the CRL)</label>
+              <select value={reasonCode} onChange={e => setReasonCode(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white">
+                {REVOCATION_REASONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
+              <p className="text-xs text-white/70 mt-1">
+                Relying parties act on this: <span className="text-amber-300">key compromise</span> casts doubt on
+                everything that key ever signed, while superseded or cessation of operation are routine. The note
+                below is for your own records and never leaves pktCert.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input value={reason} onChange={e => setReason(e.target.value)} placeholder="Internal note (optional)"
+                className="flex-1 min-w-[200px] bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" />
+              <button onClick={doRevoke} disabled={revoking}
+                className="text-sm bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg px-4 py-2 transition-colors">
+                {revoking ? 'Revoking…' : 'Revoke'}
+              </button>
+            </div>
           </div>
         )}
 
@@ -453,6 +605,7 @@ export default function Certificates() {
           <HelpButton title="Certificates — How It Works">
             <p>The unified inventory of every certificate pktCert knows about — discovered by an active scan of a Scan Target, found via Certificate Transparency search, or issued by one of your internal CAs.</p>
             <p><span className="text-gray-300 font-medium">Status</span> updates automatically: valid → expiring (within 30 days) → expired, or revoked when you revoke it manually. Revocation is terminal and feeds each CA's CRL.</p>
+            <p><span className="text-gray-300 font-medium">Renewing</span> a certificate pktCert issued creates a replacement from the same CA and template, with a new private key, and marks the old one <em>superseded</em>. Superseded certificates stay valid and are not revoked — they just stop raising expiry alerts, since the replacement already exists. Turn on auto-renew to have that happen automatically inside a chosen window; you still have to install the new key.</p>
           </HelpButton>
         </div>
         {isAdmin && (
@@ -479,6 +632,7 @@ export default function Certificates() {
           <option value="expiring">Expiring</option>
           <option value="expired">Expired</option>
           <option value="revoked">Revoked</option>
+          <option value="superseded">Superseded</option>
         </select>
         <select value={sourceFilter} onChange={e => { setSourceFilter(e.target.value); setPage(1) }}
           className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1 text-xs text-white focus:outline-none focus:ring-1 focus:ring-sky-500">
@@ -528,7 +682,7 @@ export default function Certificates() {
         </div>
       )}
 
-      {selected && <DetailModal cert={selected} isAdmin={isAdmin} onClose={() => setSelected(null)} onRevoked={load} />}
+      {selected && <DetailModal cert={selected} isAdmin={isAdmin} onClose={() => setSelected(null)} onChanged={load} />}
       {showIssue && <IssueModal cas={cas.filter(c => c.status === 'active')} templates={templates} onClose={() => setShowIssue(false)} onIssued={load} />}
       {showUpload && <UploadModal onClose={() => setShowUpload(false)} onUploaded={load} />}
     </div>

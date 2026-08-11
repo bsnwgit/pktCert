@@ -73,6 +73,7 @@ const NAV = [
   { to: '/scan-targets',            label: 'Scan Targets',           icon: '⌕', adminOnly: false },
   { to: '/certificates',            label: 'Certificates',           icon: '▤', adminOnly: false, dividerBefore: true },
   { to: '/certificate-authorities', label: 'Certificate Authorities', icon: '⛨', adminOnly: false },
+  { to: '/approvals',               label: 'Approvals',              icon: '✓', adminOnly: false },
   { to: '/alerts',                  label: 'Alerts',                 icon: '△', adminOnly: false, dividerBefore: true },
   { to: '/logs',                    label: 'Logs',                   icon: '☰', adminOnly: false },
   { to: '/settings',                label: 'Settings',               icon: '⚙', adminOnly: true, dividerBefore: true },

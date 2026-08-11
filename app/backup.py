@@ -34,6 +34,9 @@ def _read_backup_settings_sync(db_path: str) -> dict:
         "backup_interval_hours": 24,
         "backup_rotation_count": 5,
         "backup_path": str(Path(_cfg.install_dir) / "backups"),
+        # Off by default — see run_backup_sync() for why the CA keys and the
+        # key that decrypts them should not share a directory.
+        "backup_include_config": False,
     }
     try:
         conn = sqlite3.connect(db_path)
@@ -71,11 +74,49 @@ def run_backup_sync(db_path: str) -> dict:
         shutil.copy2(str(db_src), str(snap_dir / "pktcert.db"))
         result["files"].append("pktcert.db")
 
-    for candidate in [Path("config.yaml"), Path(_cfg.install_dir) / "config.yaml"]:
-        if candidate.exists():
-            shutil.copy2(str(candidate), str(snap_dir / "config.yaml"))
-            result["files"].append("config.yaml")
-            break
+    # config.yaml is EXCLUDED by default, and that default matters.
+    #
+    # The database holds every CA private key, Fernet-encrypted with
+    # credential_key — and credential_key lives in config.yaml. Copying both
+    # into one snapshot directory stores the safe next to its key: a single
+    # stolen or mis-synced backup yields every CA private key in plaintext,
+    # and backups are exactly the thing that gets rsynced to a NAS, copied to
+    # a laptop, or left on a share.
+    #
+    # So snapshots carry the data, and config.yaml is backed up separately by
+    # the operator and stored somewhere else. Set backup_include_config if you
+    # accept the risk and want single-directory restore.
+    if s.get("backup_include_config"):
+        for candidate in [Path("config.yaml"), Path(_cfg.install_dir) / "config.yaml"]:
+            if candidate.exists():
+                shutil.copy2(str(candidate), str(snap_dir / "config.yaml"))
+                result["files"].append("config.yaml")
+                break
+
+    (snap_dir / "RESTORE-NOTES.txt").write_text(
+        "pktCert backup snapshot\n"
+        "=======================\n\n"
+        f"Contains: {', '.join(result['files']) or 'nothing'}\n\n"
+        + (
+            "config.yaml IS included in this snapshot. It holds credential_key,\n"
+            "which decrypts every CA private key in pktcert.db. Treat this\n"
+            "directory as key material: restrict access to it and do not copy\n"
+            "it anywhere you would not store the CA keys themselves.\n"
+            if "config.yaml" in result["files"]
+            else
+            "config.yaml is NOT included, deliberately. It holds credential_key,\n"
+            "which decrypts every CA private key stored in pktcert.db — keeping\n"
+            "the two apart means one stolen backup is not enough to obtain your\n"
+            "CA keys.\n\n"
+            "You must back up config.yaml yourself and store it somewhere other\n"
+            "than these snapshots. WITHOUT IT, THE CA PRIVATE KEYS IN THIS\n"
+            "BACKUP CANNOT BE DECRYPTED AND ARE PERMANENTLY UNUSABLE.\n\n"
+            "To include it here anyway, enable 'backup_include_config' in\n"
+            "Settings and accept that this directory then contains everything\n"
+            "needed to impersonate your CAs.\n"
+        )
+    )
+    result["files"].append("RESTORE-NOTES.txt")
 
     keep = int(s["backup_rotation_count"])
     snapshots = sorted(

@@ -138,12 +138,22 @@ export const api = {
     request<{ pem: string }>(`/certificates/${id}/download`, {
       method: 'POST', body: JSON.stringify({ fmt, password }),
     }),
-  issueCertificate: (body: { common_name: string; sans: string[]; ca_id: number; template_id: number; key_passphrase?: string }) =>
-    request<Certificate & { private_key_pem?: string }>('/certificates/issue', { method: 'POST', body: JSON.stringify(body) }),
+  // Returns a certificate normally, or {pending_approval, request_id} when
+  // separation of duties is enabled — the issuance then happens on approval.
+  issueCertificate: (body: { common_name: string; sans: string[]; ca_id: number; template_id: number; key_passphrase?: string; auto_renew?: boolean; auto_renew_days?: number; justification?: string }) =>
+    request<Certificate & { private_key_pem?: string; pending_approval?: boolean; request_id?: number; detail?: string }>('/certificates/issue', { method: 'POST', body: JSON.stringify(body) }),
   signCsr: (body: { csr_pem: string; ca_id: number; template_id: number }) =>
     request<Certificate>('/certificates/csr', { method: 'POST', body: JSON.stringify(body) }),
-  revokeCertificate: (id: number, reason: string) =>
-    request<{ status: string }>(`/certificates/${id}/revoke`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  renewCertificate: (id: number, body: { key_passphrase?: string } = {}) =>
+    request<Certificate & { private_key_pem?: string }>(`/certificates/${id}/renew`, { method: 'POST', body: JSON.stringify(body) }),
+  setAutoRenew: (id: number, auto_renew: boolean, auto_renew_days = 30) =>
+    request<Certificate>(`/certificates/${id}/auto-renew`, {
+      method: 'PATCH', body: JSON.stringify({ auto_renew, auto_renew_days }),
+    }),
+  revokeCertificate: (id: number, reason: string, reason_code = 'unspecified') =>
+    request<{ status?: string; reason_code?: string; pending_approval?: boolean; request_id?: number; detail?: string }>(`/certificates/${id}/revoke`, {
+      method: 'POST', body: JSON.stringify({ reason, reason_code }),
+    }),
   // Step-up re-auth: current password required to decrypt a stored private
   // key or install passcode. Every successful call is audit-logged server-side.
   revealCertificateSecret: (id: number, field: 'key' | 'passcode', password: string) =>
@@ -169,12 +179,66 @@ export const api = {
   // -- Certificate Authorities --------------------------------------------------------
   getCas: () => request<CertificateAuthority[]>('/cas'),
   getCa: (id: number) => request<CertificateAuthority>(`/cas/${id}`),
-  generateCa: (body: { name: string; ca_type: string; parent_ca_id?: number | null; key_algorithm: string; key_size: number; validity_days: number }) =>
+  generateCa: (body: {
+    name: string; ca_type: string; parent_ca_id?: number | null
+    key_algorithm: string; key_size: number; validity_days: number
+    path_length?: number | null
+    permitted_dns?: string[]; excluded_dns?: string[]
+    permitted_ip?: string[]; excluded_ip?: string[]
+  }) =>
     request<CertificateAuthority>('/cas/generate', { method: 'POST', body: JSON.stringify(body) }),
-  importCa: (body: { name: string; cert_pem: string; private_key_pem: string; ca_type: string; parent_ca_id?: number | null }) =>
+  importCa: (body: { name: string; cert_pem: string; private_key_pem: string; ca_type: string; parent_ca_id?: number | null; key_passphrase?: string }) =>
     request<CertificateAuthority>('/cas/import', { method: 'POST', body: JSON.stringify(body) }),
+  // Offline root workflow — the root's private key never enters pktCert.
+  importRootCert: (body: { name: string; cert_pem: string }) =>
+    request<CertificateAuthority>('/cas/import-root-cert', { method: 'POST', body: JSON.stringify(body) }),
+  requestIntermediate: (body: {
+    name: string; parent_ca_id: number; key_algorithm: string; key_size: number
+    path_length?: number | null
+    permitted_dns?: string[]; excluded_dns?: string[]; permitted_ip?: string[]; excluded_ip?: string[]
+  }) =>
+    request<CertificateAuthority & { csr_pem: string }>('/cas/request-intermediate', { method: 'POST', body: JSON.stringify(body) }),
+  getCaCsr: (id: number) =>
+    request<{ name: string; csr_pem: string; status: string }>(`/cas/${id}/csr`),
+  importSignedCert: (id: number, cert_pem: string) =>
+    request<CertificateAuthority>(`/cas/${id}/import-signed-cert`, { method: 'POST', body: JSON.stringify({ cert_pem }) }),
+  uploadCrl: (id: number, crl_pem: string) =>
+    request<{ status: string; this_update: string; next_update: string | null; revoked_count: number }>(
+      `/cas/${id}/upload-crl`, { method: 'POST', body: JSON.stringify({ crl_pem }) }),
+
+  setCaStatus: (id: number, status: 'active' | 'disabled') =>
+    request<CertificateAuthority>(`/cas/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
   deleteCa: (id: number) => request(`/cas/${id}`, { method: 'DELETE' }),
-  getCrl: (id: number) => request<{ crl_pem: string }>(`/cas/${id}/crl`),
+  getCrl: (id: number) =>
+    request<{ crl_pem: string; crl_number: number; this_update: string; next_update: string }>(`/cas/${id}/crl`),
+
+  // -- Approvals (separation of duties; disabled by default) ------------------------
+  getApprovalConfig: () =>
+    request<{ issuance_approval_required: boolean; revocation_approval_required: boolean; admin_count: number; pending_count: number }>('/approvals/config'),
+  getApprovals: (params?: { status?: string; limit?: number }) =>
+    request<CertRequest[]>(`/approvals${toQueryString(params)}`),
+  approveRequest: (id: number, note = '') =>
+    request<CertRequest & { certificate_id?: number }>(`/approvals/${id}/approve`, { method: 'POST', body: JSON.stringify({ note }) }),
+  rejectRequest: (id: number, note = '') =>
+    request<CertRequest>(`/approvals/${id}/reject`, { method: 'POST', body: JSON.stringify({ note }) }),
+  cancelRequest: (id: number) =>
+    request<CertRequest>(`/approvals/${id}/cancel`, { method: 'POST' }),
+
+  // -- Enrolment profiles (EST / SCEP device enrolment) ------------------------------
+  getEnrollmentProfiles: () => request<EnrollmentProfile[]>('/enrollment-profiles'),
+  createEnrollmentProfile: (body: {
+    name: string; protocol: 'est' | 'scep'; ca_id: number; template_id: number
+    username?: string; allowed_name_suffix?: string; max_certs?: number | null; enabled?: boolean
+  }) => request<EnrollmentProfile & { secret: string }>('/enrollment-profiles', { method: 'POST', body: JSON.stringify(body) }),
+  updateEnrollmentProfile: (id: number, body: {
+    name: string; protocol: 'est' | 'scep'; ca_id: number; template_id: number
+    username?: string; allowed_name_suffix?: string; max_certs?: number | null; enabled?: boolean
+  }) => request<EnrollmentProfile>(`/enrollment-profiles/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  rotateEnrollmentSecret: (id: number) =>
+    request<{ secret: string }>(`/enrollment-profiles/${id}/rotate-secret`, { method: 'POST' }),
+  deleteEnrollmentProfile: (id: number) => request(`/enrollment-profiles/${id}`, { method: 'DELETE' }),
+  getEnrollmentLog: (params?: { outcome?: string; limit?: number }) =>
+    request<EnrollmentLogEntry[]>(`/enrollment-profiles/log${toQueryString(params)}`),
 
   // -- Templates ---------------------------------------------------------------------
   getTemplates: () => request<CertTemplate[]>('/templates'),
@@ -190,6 +254,7 @@ export const api = {
   scanTargetNow: (id: number) => request<{ status: string; certificates_found: number; hosts_scanned: number; errors: number }>(`/scan-targets/${id}/scan-now`, { method: 'POST' }),
 
   // -- Alerts ---------------------------------------------------------------------
+  getAlertConditions: () => request<AlertCondition[]>('/alerts/conditions'),
   getAlertRules: () => request<AlertRule[]>('/alerts/rules'),
   createAlertRule: (body: Partial<AlertRule>) => request<AlertRule>('/alerts/rules', { method: 'POST', body: JSON.stringify(body) }),
   updateAlertRule: (id: number, body: Partial<AlertRule>) => request<AlertRule>(`/alerts/rules/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
@@ -277,10 +342,16 @@ export const api = {
   runCleanupNow: () => request<CleanupResult>('/system/cleanup', { method: 'POST' }),
 
   // ── Full backup bundle export/import ────────────────────────────────────
-  exportConfig: async (): Promise<Blob> => {
+  exportConfig: async (password: string): Promise<Blob> => {
     const headers: Record<string, string> = {}
     if (_accessToken) headers['Authorization'] = `Bearer ${_accessToken}`
-    const res = await fetch('/api/system/export', { headers })
+    // FastAPI needs this to parse the JSON body carrying the password.
+    headers['Content-Type'] = 'application/json'
+    const res = await fetch('/api/system/export', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ password }),
+    })
     if (!res.ok) throw new Error(`Export failed: ${res.status} ${res.statusText}`)
     return res.blob()
   },
@@ -429,7 +500,7 @@ export interface User {
   has_password: boolean
 }
 
-export type CertStatus = 'valid' | 'expiring' | 'expired' | 'revoked' | 'unknown'
+export type CertStatus = 'valid' | 'expiring' | 'expired' | 'revoked' | 'superseded' | 'unknown'
 export type CertSource = 'scan' | 'ct' | 'issued' | 'external'
 
 export interface Certificate {
@@ -459,8 +530,84 @@ export interface Certificate {
   last_seen_at: string
   revoked_at: string | null
   revoked_reason: string | null
+  revoked_reason_code: string | null
   created_at: string
+  renewed_from_id: number | null
+  renewed_to_id: number | null
+  auto_renew: boolean
+  auto_renew_days: number
   private_key_pem?: string
+}
+
+export interface CertRequest {
+  id: number
+  request_type: 'issue' | 'revoke'
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled'
+  common_name: string | null
+  sans: string[]
+  ca_id: number | null
+  template_id: number | null
+  auto_renew: boolean
+  auto_renew_days: number
+  certificate_id: number | null
+  reason: string | null
+  reason_code: string | null
+  requested_by: string
+  requested_by_id: number | null
+  justification: string | null
+  requested_at: string
+  decided_by: string | null
+  decided_at: string | null
+  decision_note: string | null
+  resulting_certificate_id: number | null
+}
+
+export interface AlertConditionParam {
+  key: string
+  label: string
+  type: 'int' | 'string' | 'multiselect'
+  default: unknown
+  hint: string
+  options: string[]
+  min: number | null
+  max: number | null
+}
+
+export interface AlertCondition {
+  key: string
+  label: string
+  description: string
+  target: 'certificate' | 'ca' | 'scan_target' | 'system'
+  scoped: boolean
+  params: AlertConditionParam[]
+}
+
+export interface EnrollmentProfile {
+  id: number
+  name: string
+  protocol: 'est' | 'scep'
+  ca_id: number
+  template_id: number
+  username: string | null
+  enabled: boolean
+  allowed_name_suffix: string | null
+  max_certs: number | null
+  issued_count: number
+  created_at: string
+  last_used_at: string | null
+}
+
+export interface EnrollmentLogEntry {
+  id: number
+  profile_id: number | null
+  protocol: string
+  operation: string
+  client_ip: string | null
+  subject: string | null
+  outcome: 'issued' | 'denied' | 'error'
+  detail: string | null
+  certificate_id: number | null
+  created_at: string
 }
 
 export type CaType = 'root' | 'intermediate'
@@ -477,8 +624,16 @@ export interface CertificateAuthority {
   signature_algorithm: string
   not_before: string
   not_after: string
-  status: 'active' | 'expired' | 'revoked'
+  status: 'active' | 'disabled' | 'expired' | 'revoked' | 'pending_signature'
   crl_number: number
+  path_length: number | null
+  key_storage: 'local' | 'offline'
+  has_csr: boolean
+  has_uploaded_crl: boolean
+  name_constraints: {
+    permitted_dns: string[]; excluded_dns: string[]
+    permitted_ip: string[]; excluded_ip: string[]
+  } | null
   source: 'generated' | 'imported'
   created_at: string
 }
@@ -536,6 +691,8 @@ export interface AlertRule {
   cooldown_min: number
   channels: string[]
   created_at: string
+  params: Record<string, unknown>
+  scope: Record<string, unknown>
 }
 
 export interface AlertEvent {
