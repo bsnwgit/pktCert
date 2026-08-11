@@ -491,7 +491,7 @@ function SuiteTokenDisplay() {
               <button
                 onClick={async () => { const ok = await copyToClipboard(token); if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000) } }}
                 className="px-3 py-1.5 text-xs font-medium text-white rounded-lg whitespace-nowrap transition-colors"
-                style={{ background: copied ? '#16a34a' : '#0284c7' }}
+                style={{ background: copied ? '#52cc8e' : '#0284c7' }}
               >
                 {copied ? '✓ Copied' : 'Copy Token'}
               </button>
