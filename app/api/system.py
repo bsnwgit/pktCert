@@ -515,3 +515,55 @@ async def restore_from_snapshot(user: AdminUser, snapshot_name: str, files: Opti
     wanted = _parse_files_param(files)
     result = await asyncio.to_thread(_restore_from_dir, snap_dir, cfg, wanted)
     return result
+
+# ── App log forwarding ────────────────────────────────────────────────────────
+
+class LogForwardTest(BaseModel):
+    host: str
+    port: int = 5514
+    protocol: str = "udp"
+
+
+@router.get("/log-forward/status")
+async def log_forward_status(_: AdminUser):
+    """Delivery counters for the log forwarder, so it can be seen working."""
+    from app.log_forward import get_forward_stats
+    return get_forward_stats()
+
+
+@router.post("/log-forward/test")
+async def log_forward_test(body: LogForwardTest, _: AdminUser):
+    """Send one test line to the collector without touching the live handler."""
+    from app.log_forward import send_test_message
+    return send_test_message(host=body.host, port=body.port, protocol=body.protocol)
+
+
+@router.post("/log-forward/reload")
+async def log_forward_reload(_: AdminUser):
+    """Re-read log_forward_* settings and apply them without a restart."""
+    import json as _json, logging as _logging
+    import aiosqlite as _aio
+    from app.config import get_settings as _gs
+    from app.log_forward import configure_forwarding, get_forward_stats
+
+    cfg = _gs()
+    fwd: dict = {}
+    async with _aio.connect(cfg.db_path) as db:
+        async with db.execute(
+            "SELECT key, value FROM settings WHERE key LIKE 'log_forward_%'"
+        ) as cur:
+            for k, v in await cur.fetchall():
+                try:
+                    fwd[k] = _json.loads(v)
+                except Exception:
+                    fwd[k] = v
+
+    configure_forwarding(
+        enabled=bool(fwd.get("log_forward_enabled")),
+        host=str(fwd.get("log_forward_host") or ""),
+        port=int(fwd.get("log_forward_port") or 5514),
+        protocol=str(fwd.get("log_forward_protocol") or "udp"),
+        level=getattr(_logging, str(fwd.get("log_forward_level") or "INFO"), _logging.INFO),
+        app_name=str(fwd.get("log_forward_app_name") or "pktcert"),
+    )
+    return get_forward_stats()
