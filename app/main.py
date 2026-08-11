@@ -126,6 +126,11 @@ async def lifespan(app: FastAPI):
     alert_engine = AlertEngine()
     await alert_engine.start(settings.db_path)
     app.state.alert_engine = alert_engine
+
+    from app.retention import RetentionScheduler
+    retention = RetentionScheduler()
+    await retention.start()
+    app.state.retention = retention
     log.info("Alert engine started")
 
     from app.backup import BackupScheduler
@@ -152,6 +157,7 @@ async def lifespan(app: FastAPI):
     await renewal_engine.stop()
     await scan_engine.stop()
     await alert_engine.stop()
+    await retention.stop()
     await backup_scheduler.stop()
     _log_handler.stop()
     log.info("Shutdown complete")
