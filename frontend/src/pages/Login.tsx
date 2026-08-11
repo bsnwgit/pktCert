@@ -2,6 +2,7 @@ import { useState, useEffect, FormEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../store/auth'
 import { api } from '../api/client'
+import { BrandLockup } from '../components/Brand'
 
 const SSO_ERROR_MESSAGES: Record<string, string> = {
   user_inactive:          'Your account is inactive. Contact an administrator.',
@@ -62,13 +63,13 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+    <div className="relative z-10 min-h-screen flex items-center justify-center">
       <div className="w-full max-w-sm">
         <div className="flex justify-center mb-8">
-          <img src="/lockup-128h.png" alt="pktCert" className="max-w-full h-auto" />
+          <BrandLockup markSize={52} />
         </div>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 space-y-5">
+        <div className="f-panel f-tick-on p-8 space-y-6">
           {samlEnabled && (
             <>
               <button
