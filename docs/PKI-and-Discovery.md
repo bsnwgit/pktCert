@@ -432,3 +432,49 @@ alongside alert evaluation:
 renewal. Neither is ever overwritten by this automatic refresh, and neither
 raises expiry alerts — a revoked certificate is already dead, and a
 superseded one has already been replaced.
+
+
+## Alerting: conditions, parameters and scope
+
+An alert rule watches for one **condition**, with **parameters** that say what
+the limit is here, optionally narrowed by **scope** to part of the inventory.
+
+Conditions are declared in `app/cert/alert_conditions.py`, and both the
+evaluator and the Alerts page read that declaration — the parameter inputs are
+rendered from it, so a condition added to the registry becomes configurable in
+the UI with no frontend change.
+
+| Condition | Parameters |
+|---|---|
+| Certificate expiring | days before expiry (30) |
+| Certificate expired | — |
+| Certificate revoked | — (fires once; revocation is terminal) |
+| Weak key | minimum RSA bits (2048), minimum EC bits (256) |
+| Weak signature algorithm | which algorithms to flag (md5, sha1) |
+| Self-signed certificate | — |
+| Validity too long | maximum days (398, the public-CA ceiling) |
+| Wildcard certificate | — |
+| Issuer not one of yours | — |
+| Newly discovered certificate | discovered within (hours) |
+| Certificate changed on a host | look back (hours) |
+| CA expiring | days before expiry (90) |
+| CRL stale or unpublished | days before the CRL lapses (2) |
+| Scan target unreachable | — |
+| Repeated enrolment failures | failures (5), within minutes (60) |
+
+RSA and EC key sizes are judged separately because their bit counts aren't
+comparable — 256 EC bits is strong, 256 RSA bits is a toy.
+
+**Scope** limits a rule to one CA, one source, or a name/host pattern. Empty
+means everything, which is the default and the old behaviour. Narrow rules are
+the ones that get acted on: "short keys on certificates we issued" is
+actionable, while "every short key anywhere in the discovery inventory" is
+noise on day one and ignored by day three.
+
+Rules created before parameters existed keep working untouched — the old
+`threshold` column is still read as the days value when a rule carries no
+parameter for it, so nothing needed migrating and nothing changed meaning.
+
+Certificates that are revoked or superseded are excluded from every condition
+except "revoked" itself: a revoked certificate's problems are moot, and a
+superseded one's replacement already exists.

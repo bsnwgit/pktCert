@@ -1,19 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, AlertRule, AlertEvent, AlertConditionType } from '../api/client'
+import { api, AlertRule, AlertEvent, AlertCondition, AlertConditionType } from '../api/client'
 import { useAuth } from '../store/auth'
 import TimeRangeControl, { TimeRange } from '../components/TimeRangeControl'
 import Pagination from '../components/Pagination'
 import HelpButton from '../components/HelpButton'
 
-const CONDITION_LABEL: Record<AlertConditionType, string> = {
-  cert_expiring: 'Certificate expiring soon (days)',
+// Conditions and their parameters come from GET /api/alerts/conditions, so a
+// condition added to the backend registry is configurable here immediately
+// with no change to this file. This map is only a display fallback for a rule
+// referencing something the server no longer offers.
+const CONDITION_LABEL: Record<string, string> = {
+  cert_expiring: 'Certificate expiring',
   cert_expired: 'Certificate expired',
   cert_revoked: 'Certificate revoked',
-  ca_expiring: 'CA expiring soon (days)',
+  ca_expiring: 'CA expiring',
   scan_target_unreachable: 'Scan target unreachable',
 }
 
-const THRESHOLD_CONDITIONS: AlertConditionType[] = ['cert_expiring', 'ca_expiring']
 const CHANNELS_AVAILABLE = ['inapp', 'email', 'slack', 'pagerduty', 'webhook', 'tracecat']
 const PAGE_SIZE_OPTIONS = [25, 50, 75, 100]
 
@@ -87,27 +90,87 @@ interface RuleFormData {
   severity: 'info' | 'warning' | 'critical'
   cooldown_min: string
   channels: string[]
+  params: Record<string, unknown>
+  scope: Record<string, unknown>
 }
 
 function fromRule(r: AlertRule): RuleFormData {
   return {
     name: r.name, condition_type: r.condition_type, threshold: r.threshold ?? 85,
     severity: r.severity, cooldown_min: String(r.cooldown_min), channels: r.channels,
+    params: r.params ?? {}, scope: r.scope ?? {},
   }
 }
 
 const EMPTY_RULE: RuleFormData = {
   name: '', condition_type: 'cert_expiring', threshold: 30,
   severity: 'warning', cooldown_min: '15', channels: ['inapp'],
+  params: {}, scope: {},
 }
 
-function RuleForm({ initial, onSave, onCancel, saving }: {
+// One parameter input, rendered from what the condition says it accepts.
+function ParamField({ param, value, onChange }: {
+  param: AlertCondition['params'][number]
+  value: unknown
+  onChange: (v: unknown) => void
+}) {
+  const inp = 'w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-sky-500'
+  const current = value ?? param.default
+
+  if (param.type === 'multiselect') {
+    const selected = Array.isArray(current) ? (current as string[]) : []
+    return (
+      <div>
+        <label className="block text-xs text-white mb-1">{param.label}</label>
+        <div className="flex flex-wrap gap-2">
+          {param.options.map(opt => {
+            const on = selected.includes(opt)
+            return (
+              <button key={opt} type="button"
+                onClick={() => onChange(on ? selected.filter(o => o !== opt) : [...selected, opt])}
+                className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                  on ? 'bg-sky-600/30 border-sky-500 text-sky-300' : 'bg-gray-800 border-gray-700 text-white hover:border-gray-500'
+                }`}>
+                {opt}
+              </button>
+            )
+          })}
+        </div>
+        {param.hint && <p className="text-xs text-slate-400 mt-1">{param.hint}</p>}
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <label className="block text-xs text-white mb-1">{param.label}</label>
+      <input
+        type={param.type === 'int' ? 'number' : 'text'}
+        min={param.min ?? undefined} max={param.max ?? undefined}
+        value={String(current ?? '')}
+        onChange={e => onChange(param.type === 'int' ? Number(e.target.value) : e.target.value)}
+        className={inp} />
+      {param.hint && <p className="text-xs text-slate-400 mt-1">{param.hint}</p>}
+    </div>
+  )
+}
+
+function RuleForm({ initial, conditions, onSave, onCancel, saving }: {
   initial: RuleFormData
+  conditions: AlertCondition[]
   onSave: (data: RuleFormData) => Promise<void>
   onCancel: () => void
   saving: boolean
 }) {
   const [form, setForm] = useState<RuleFormData>(initial)
+  const condition = conditions.find(c => c.key === form.condition_type)
+  const setParam = (key: string, v: unknown) => setForm(f => ({ ...f, params: { ...f.params, [key]: v } }))
+  const setScope = (key: string, v: unknown) => setForm(f => {
+    const scope = { ...f.scope }
+    if (v === '' || v === null) delete scope[key]
+    else scope[key] = v
+    return { ...f, scope }
+  })
   const set = <K extends keyof RuleFormData>(k: K, v: RuleFormData[K]) => setForm(f => ({ ...f, [k]: v }))
 
   const toggleChannel = (ch: string) => {
@@ -127,16 +190,14 @@ function RuleForm({ initial, onSave, onCancel, saving }: {
         </div>
         <div className="sm:col-span-2">
           <label className="block text-xs text-white mb-1">Condition</label>
-          <select value={form.condition_type} onChange={e => set('condition_type', e.target.value as AlertConditionType)} className={inp}>
-            {Object.entries(CONDITION_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          <select value={form.condition_type}
+            onChange={e => setForm(f => ({ ...f, condition_type: e.target.value as AlertConditionType, params: {} }))}
+            className={inp}>
+            {conditions.length === 0 && <option value={form.condition_type}>{CONDITION_LABEL[form.condition_type] ?? form.condition_type}</option>}
+            {conditions.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
           </select>
+          {condition && <p className="text-xs text-slate-400 mt-1">{condition.description}</p>}
         </div>
-        {THRESHOLD_CONDITIONS.includes(form.condition_type) && (
-          <div>
-            <label className="block text-xs text-white mb-1">Threshold (days before expiry)</label>
-            <input type="number" min={1} max={3650} value={form.threshold} onChange={e => set('threshold', Number(e.target.value))} className={inp} />
-          </div>
-        )}
         <div>
           <label className="block text-xs text-white mb-1">Severity</label>
           <select value={form.severity} onChange={e => set('severity', e.target.value as 'info' | 'warning' | 'critical')} className={inp}>
@@ -150,6 +211,51 @@ function RuleForm({ initial, onSave, onCancel, saving }: {
           <input type="number" min={0} max={1440} value={form.cooldown_min} onChange={e => set('cooldown_min', e.target.value)} className={inp} />
         </div>
       </div>
+
+      {condition && condition.params.length > 0 && (
+        <div className="border-t border-gray-800 pt-4">
+          <label className="block text-xs text-white mb-2">Condition settings</label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {condition.params.map(pm => (
+              <ParamField key={pm.key} param={pm} value={form.params[pm.key]}
+                onChange={v => setParam(pm.key, v)} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {condition?.scoped && (
+        <div className="border-t border-gray-800 pt-4">
+          <label className="block text-xs text-white mb-2">Limit to (optional)</label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs text-white mb-1">Source</label>
+              <select value={String(form.scope.source ?? '')} onChange={e => setScope('source', e.target.value)} className={inp}>
+                <option value="">Any source</option>
+                <option value="issued">Issued by pktCert</option>
+                <option value="enrolled">Enrolled by a device</option>
+                <option value="scan">Found by scanning</option>
+                <option value="ct">Found in CT logs</option>
+                <option value="external">Uploaded</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-white mb-1">Name contains</label>
+              <input value={String(form.scope.name_like ?? '')} onChange={e => setScope('name_like', e.target.value)}
+                placeholder="e.g. .corp.example.com" className={inp} />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-xs text-white mb-1">Host contains</label>
+              <input value={String(form.scope.host_like ?? '')} onChange={e => setScope('host_like', e.target.value)}
+                placeholder="e.g. 10.20." className={inp} />
+            </div>
+          </div>
+          <p className="text-xs text-slate-400 mt-2">
+            Leave blank to watch everything. Narrow rules are the ones that get acted on — a rule covering the
+            whole inventory is noise on day one and ignored by day three.
+          </p>
+        </div>
+      )}
 
       <div>
         <label className="block text-xs text-white mb-2">Notification channels</label>
@@ -192,6 +298,7 @@ export default function Alerts() {
   const [events, setEvents] = useState<AlertEvent[]>([])
   const [history, setHistory] = useState<AlertEvent[]>([])
   const [rules, setRules] = useState<AlertRule[]>([])
+  const [conditions, setConditions] = useState<AlertCondition[]>([])
   const [loading, setLoading] = useState(true)
   const [addingRule, setAddingRule] = useState(false)
   const [editRule, setEditRule] = useState<AlertRule | null>(null)
@@ -232,6 +339,9 @@ export default function Alerts() {
 
   const loadRules = useCallback(async () => {
     setRules(await api.getAlertRules())
+    // The condition registry drives the rule form's fields, so it has to
+    // be loaded before a rule can be sensibly edited.
+    try { setConditions(await api.getAlertConditions()) } catch { /* older backend */ }
   }, [])
 
   useEffect(() => { loadEvents() }, [loadEvents])
@@ -298,10 +408,13 @@ export default function Alerts() {
     try {
       const body = {
         name: form.name, condition_type: form.condition_type,
-        threshold: THRESHOLD_CONDITIONS.includes(form.condition_type) ? form.threshold : null,
+        // threshold is retained only for rules created before parameters
+        // existed; new rules carry their days value in params.
+        threshold: null,
         severity: form.severity, enabled: true,
         cooldown_min: parseInt(form.cooldown_min) || 15,
         channels: form.channels,
+        params: form.params, scope: form.scope,
       }
       if (editRule) {
         await api.updateAlertRule(editRule.id, body)
@@ -368,7 +481,7 @@ export default function Alerts() {
             <h1 className="text-xl font-bold text-white">Alerts</h1>
             <HelpButton title="Alerts — How It Works">
               <p>Rules watch certificate and CA expiration windows, revocations, and scan targets stuck in an error state — each rule fires an event when its condition is met, and auto-resolves once it clears (revocation is terminal and never auto-resolves).</p>
-              <p>Events notify on whichever channels a rule has enabled — in-app, email, Slack, PagerDuty, webhook, or TraceCat. Every channel except in-app must first be configured and enabled under Settings → Notifications; a rule targeting an unconfigured channel is skipped rather than failed. Only the tick that opens an event notifies, so a certificate that stays expiring won't re-notify every minute.</p>
+              <p>A rule watches for one <span className="text-gray-300 font-medium">condition</span> — expiry, a key that's too short, a SHA-1 signature, a self-signed certificate, an issuer you don't control, a CRL about to lapse, and more. Each condition has its own settings, so you decide what "too short" or "too soon" means here rather than living with a number someone else picked.</p><p><span className="text-gray-300 font-medium">Limit to</span> narrows a rule to part of the inventory — one source, a name or host pattern. Narrow rules are the ones that get acted on; a rule covering everything is noise on day one and ignored by day three.</p><p>Events notify on whichever channels a rule has enabled — in-app, email, Slack, PagerDuty, webhook, or TraceCat. Every channel except in-app must first be configured and enabled under Settings → Notifications; a rule targeting an unconfigured channel is skipped rather than failed. Only the tick that opens an event notifies, so a certificate that stays expiring won't re-notify every minute.</p>
               <p>Import Rules CSV lets you bulk-create rules instead of adding them one at a time.</p>
             </HelpButton>
           </div>
@@ -548,8 +661,8 @@ export default function Alerts() {
       {/* Rules */}
       {tab === 'rules' && (
         <div className="space-y-4">
-          {addingRule && <RuleForm initial={EMPTY_RULE} onSave={handleSaveRule} onCancel={() => setAddingRule(false)} saving={saving} />}
-          {editRule && <RuleForm initial={fromRule(editRule)} onSave={handleSaveRule} onCancel={() => setEditRule(null)} saving={saving} />}
+          {addingRule && <RuleForm initial={EMPTY_RULE} conditions={conditions} onSave={handleSaveRule} onCancel={() => setAddingRule(false)} saving={saving} />}
+          {editRule && <RuleForm initial={fromRule(editRule)} conditions={conditions} onSave={handleSaveRule} onCancel={() => setEditRule(null)} saving={saving} />}
           {error && <p className="text-sm text-red-400">{error}</p>}
 
           <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
@@ -582,7 +695,10 @@ export default function Alerts() {
                       </button>
                     </td>
                     <td className="px-4 py-3 font-medium text-white">{rule.name}</td>
-                    <td className="px-4 py-3 text-white text-xs">{CONDITION_LABEL[rule.condition_type] ?? rule.condition_type}</td>
+                    <td className="px-4 py-3 text-white text-xs">
+                      {conditions.find(c => c.key === rule.condition_type)?.label
+                        ?? CONDITION_LABEL[rule.condition_type] ?? rule.condition_type}
+                    </td>
                     <td className="px-4 py-3 text-white">{rule.threshold ?? '—'}</td>
                     <td className="px-4 py-3">
                       <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${SEV_STYLES[rule.severity] ?? SEV_STYLES.info}`}>{rule.severity}</span>

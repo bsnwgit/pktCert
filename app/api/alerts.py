@@ -13,15 +13,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app import notifications
+from app.cert import alert_conditions
 from app.database import get_db
 from app.dependencies import CurrentUser, AnalystUser, AdminUser
 
 router = APIRouter()
 
-_CONDITION_TYPES = {
-    "cert_expiring", "cert_expired", "cert_revoked",
-    "ca_expiring", "scan_target_unreachable",
-}
+# Derived from the condition registry rather than duplicated — a new
+# condition becomes selectable by existing here and nowhere else.
+_CONDITION_TYPES = set(alert_conditions.CONDITIONS)
 
 # Mirrors app/notifications.py, which owns the senders. Settings -> Notifications
 # has always been able to configure and test PagerDuty and TraceCat, but rules
@@ -39,6 +39,38 @@ class RuleRequest(BaseModel):
     enabled: bool = True
     cooldown_min: int = 15
     channels: list[str] = ["inapp"]
+    # Whatever this condition needs — see app/cert/alert_conditions.py. Absent
+    # values fall back to the legacy `threshold` column and then the
+    # condition's own default, so rules written before parameters existed keep
+    # working unchanged.
+    params: dict = {}
+    # Which certificates the rule watches: ca_id, source, name_like, host_like.
+    # Empty means all of them.
+    scope: dict = {}
+
+
+def _json_or(r, column: str, fallback):
+    """Read a JSON column, tolerating a row read before the column existed."""
+    try:
+        raw = r[column]
+    except (KeyError, IndexError):
+        return fallback
+    if not raw:
+        return fallback
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return fallback
+
+
+@router.get("/conditions")
+async def list_conditions(user: CurrentUser):
+    """Every condition a rule can use, with the parameters it accepts.
+
+    The Alerts page renders parameter inputs from this rather than hardcoding
+    them per condition, so a condition added to the registry is immediately
+    configurable in the UI with no frontend change."""
+    return [c.as_dict() for c in alert_conditions.CONDITIONS.values()]
 
 
 def _rule_out(r) -> dict:
@@ -51,6 +83,8 @@ def _rule_out(r) -> dict:
         "threshold": r["threshold"], "severity": r["severity"],
         "enabled": bool(r["enabled"]), "cooldown_min": r["cooldown_min"],
         "channels": channels, "created_at": r["created_at"],
+        "params": _json_or(r, "params_json", {}),
+        "scope": _json_or(r, "scope_json", {}),
     }
 
 
@@ -153,9 +187,11 @@ async def create_rule(body: RuleRequest, user: AdminUser, db: aiosqlite.Connecti
         raise HTTPException(status_code=400, detail=f"condition_type must be one of {sorted(_CONDITION_TYPES)}")
     channels = [c for c in body.channels if c in _CHANNEL_TYPES] or ["inapp"]
     cur = await db.execute(
-        """INSERT INTO alert_rules (name, condition_type, threshold, severity, enabled, cooldown_min, channels)
-           VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *""",
-        (body.name, body.condition_type, body.threshold, body.severity, int(body.enabled), body.cooldown_min, json.dumps(channels)),
+        """INSERT INTO alert_rules (name, condition_type, threshold, severity, enabled, cooldown_min,
+           channels, params_json, scope_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
+        (body.name, body.condition_type, body.threshold, body.severity, int(body.enabled), body.cooldown_min,
+         json.dumps(channels), json.dumps(body.params or {}), json.dumps(body.scope or {})),
     )
     row = await cur.fetchone()
     await db.commit()
@@ -169,9 +205,10 @@ async def update_rule(rule_id: int, body: RuleRequest, user: AdminUser, db: aios
             raise HTTPException(status_code=404, detail="Rule not found")
     channels = [c for c in body.channels if c in _CHANNEL_TYPES] or ["inapp"]
     await db.execute(
-        """UPDATE alert_rules SET name = ?, condition_type = ?, threshold = ?, severity = ?, enabled = ?, cooldown_min = ?, channels = ?
-           WHERE id = ?""",
-        (body.name, body.condition_type, body.threshold, body.severity, int(body.enabled), body.cooldown_min, json.dumps(channels), rule_id),
+        """UPDATE alert_rules SET name = ?, condition_type = ?, threshold = ?, severity = ?, enabled = ?,
+           cooldown_min = ?, channels = ?, params_json = ?, scope_json = ? WHERE id = ?""",
+        (body.name, body.condition_type, body.threshold, body.severity, int(body.enabled), body.cooldown_min,
+         json.dumps(channels), json.dumps(body.params or {}), json.dumps(body.scope or {}), rule_id),
     )
     await db.commit()
     async with db.execute("SELECT * FROM alert_rules WHERE id = ?", (rule_id,)) as cur:

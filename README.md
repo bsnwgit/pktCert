@@ -380,6 +380,14 @@ python3 tests/test_offline_root.py
 ```
 
 ```bash
+python3 tests/test_est.py
+```
+
+```bash
+python3 tests/test_alert_conditions.py
+```
+
+```bash
 python3 tests/test_export_stepup.py
 ```
 
@@ -397,6 +405,9 @@ python3 tests/test_export_stepup.py
   two-person rule, and that approval is what performs the operation
 - **test_offline_root** — the whole offline ceremony, with the root key held
   only in the test and never given to the app
+- **test_est** — RFC 7030 enrolment: PKCS#7 responses, profile policy, secret rotation
+- **test_alert_conditions** — that a parameter changes the outcome and a scope
+  genuinely narrows, plus that pre-parameter rules keep working
 - **test_export_stepup** — password re-entry before the backup bundle downloads
 
 ## Contributing
