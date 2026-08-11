@@ -124,10 +124,16 @@
   /* Horizontal rules are structure, so they must be seen */
   hr { border-color: var(--f-line); }
 
-  ::-webkit-scrollbar { width: 9px; height: 9px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(216, 180, 110, 0.26); }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(216, 180, 110, 0.44); }
+  /* Firefox honours only scrollbar-width/scrollbar-color and ignores the
+     ::-webkit-* rules completely, so the default bar showed through there
+     regardless. Both syntaxes are set, and on * rather than :root so nested
+     scroll containers inherit them too. */
+  * { scrollbar-width: thin; scrollbar-color: rgba(216, 180, 110, 0.42) rgba(216, 180, 110, 0.06); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: rgba(216, 180, 110, 0.06); }
+  ::-webkit-scrollbar-thumb { background: rgba(216, 180, 110, 0.42); border-radius: 0; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(216, 180, 110, 0.7); }
+  ::-webkit-scrollbar-corner { background: transparent; }
 }
 
 @layer components {
