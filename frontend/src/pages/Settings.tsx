@@ -275,6 +275,48 @@ function PortField({ value, onChange, loaded }: { value: number; onChange: (v: n
 }
 
 // -- Section wrapper with Save ----------------------------------------------------
+// ── Log forwarding tester ─────────────────────────────────────────────────────
+// A forwarder that silently drops everything looks identical to one that works,
+// so the settings page has to be able to prove the path end to end.
+function LogForwardTester({ host, port, protocol }: { host: string; port: number; protocol: string }) {
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<string>('')
+  const [ok, setOk] = useState<boolean | null>(null)
+
+  const run = async () => {
+    setBusy(true); setResult(''); setOk(null)
+    try {
+      const r = await api.logForwardTest(host, port, protocol)
+      setOk(r.ok)
+      setResult(r.ok
+        ? `Sent 1 message to ${r.target} — check pktLog for "pktCert log forwarding test message"`
+        : `Failed: ${r.last_error || 'no bytes sent'}`)
+    } catch (e: any) {
+      setOk(false); setResult(e.message || 'Test failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Field label="Test" hint="Sends one message using the values above, without saving them">
+      <div className="flex items-center gap-3 flex-wrap">
+        <button
+          onClick={run}
+          disabled={busy || !host}
+          className="f-lbl f-lbl-gold border border-blue-500/40 px-4 py-2 hover:border-blue-500 hover:text-blue-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {busy ? 'Sending…' : 'Send test message'}
+        </button>
+        {result && (
+          <span className={`text-xs ${ok ? 'text-green-400' : 'text-red-400'}`}>{result}</span>
+        )}
+        {!host && <span className="text-xs text-gray-500">Set a collector host first</span>}
+      </div>
+    </Field>
+  )
+}
+
 function Section({ title, help, children, onSave, saving, saved, error }: {
   title: string
   help?: { title: string; content: React.ReactNode }
@@ -1456,10 +1498,11 @@ const SECURITY_TABS: Array<{ id: SecurityTabId; label: string; adminOnly?: boole
 // is SQLite-only (no ClickHouse/DuckDB option like pktsnmp/pktflow), so
 // Storage has no backend picker — it shows retention settings, a manual
 // cleanup action, and DB size/row-count stats instead.
-type DataTabId = 'storage' | 'backups'
+type DataTabId = 'storage' | 'backups' | 'logforward'
 const DATA_TABS: Array<{ id: DataTabId; label: string }> = [
   { id: 'storage', label: 'Storage' },
   { id: 'backups', label: 'Backups' },
+  { id: 'logforward', label: 'Log Forwarding' },
 ]
 
 export default function Settings() {
@@ -1548,6 +1591,10 @@ export default function Settings() {
     'okta_saml_idp_cert', 'okta_saml_sp_entity_id', 'okta_saml_sp_cert', 'okta_saml_sp_key',
   ], settings, load)
   const crlSave = useSave(['crl_base_url', 'require_issuance_approval', 'require_revocation_approval'], settings, load)
+  const logForwardSave = useSave([
+    'log_forward_enabled', 'log_forward_host', 'log_forward_port',
+    'log_forward_protocol', 'log_forward_level', 'log_forward_app_name',
+  ], settings, load)
   const backupSave = useSave(['backup_enabled', 'backup_interval_hours', 'backup_rotation_count', 'backup_path', 'backup_include_config'], settings, load)
   const storageSave = useSave(['alert_event_retention_days'], settings, load)
   const lucidSave = useSave(['lucid_api_token'], settings, load)
@@ -2035,6 +2082,50 @@ export default function Settings() {
           </Field>
         </Section>
       )}
+      {dataTab === 'logforward' && (
+        <Section title="Log Forwarding" onSave={logForwardSave.save} saving={logForwardSave.saving} saved={logForwardSave.saved} error={logForwardSave.error}
+          help={{
+            title: 'Log Forwarding — How It Works',
+            content: <>
+              <p>Ships pktCert's own application log to a syslog collector — normally <span className="text-gray-300 font-medium">pktLog</span>, which listens on port <code className="text-gray-400">5514</code> — so this app's logs sit alongside the rest of the estate instead of only in its local Logs page.</p>
+              <p>Messages are sent as <span className="text-gray-300 font-medium">RFC 5424</span>. pktLog also parses RFC 3164, but 3164 timestamps carry no timezone and the collector has to guess the offset; 5424 carries a full offset so there is nothing to guess.</p>
+              <p>Delivery is fire-and-forget on a background thread — if the collector is unreachable, lines are dropped and counted rather than blocking or crashing pktCert. Use <span className="text-gray-300 font-medium">Send test message</span> to confirm the path end to end.</p>
+              <p><span className="text-amber-500 font-medium">pktLog drops syslog from unregistered sources.</span> This host's IP must also be present and enabled under pktLog's Settings → Collectors, or the messages are accepted on the wire and silently discarded.</p>
+              <p>Local logging is unaffected: records continue to be written to the in-app Logs page regardless of this setting.</p>
+            </>,
+          }}
+        >
+          <Field label="Forward app logs" hint="Send this app's log records to a syslog collector (e.g. pktLog)">
+            <Toggle value={bool('log_forward_enabled')} onChange={v => set('log_forward_enabled', v)} />
+          </Field>
+          <Field label="Collector host" hint="Hostname or IP of the pktLog / syslog collector">
+            <TextInput value={str('log_forward_host')} onChange={v => set('log_forward_host', v)} placeholder="10.0.0.10" />
+          </Field>
+          <Field label="Port" hint="pktLog listens on 5514 by default">
+            <NumberInput value={num('log_forward_port', 5514)} onChange={v => set('log_forward_port', v)} min={1} max={65535} />
+          </Field>
+          <Field label="Protocol" hint="UDP is fire-and-forget; TCP confirms delivery to the collector">
+            <SelectInput value={str('log_forward_protocol') || 'udp'} onChange={v => set('log_forward_protocol', v)}
+                    options={[{ value: 'udp', label: 'UDP' }, { value: 'tcp', label: 'TCP' }]} />
+          </Field>
+          <Field label="Minimum level" hint="Records below this level are not forwarded">
+            <SelectInput value={str('log_forward_level') || 'INFO'} onChange={v => set('log_forward_level', v)}
+                    options={[
+                      { value: 'DEBUG', label: 'Debug' }, { value: 'INFO', label: 'Info' },
+                      { value: 'WARNING', label: 'Warning' }, { value: 'ERROR', label: 'Error' },
+                    ]} />
+          </Field>
+          <Field label="Application name" hint="Appears as the APP-NAME field in the syslog message">
+            <TextInput value={str('log_forward_app_name') || 'pktcert'} onChange={v => set('log_forward_app_name', v)} placeholder="pktcert" />
+          </Field>
+          <LogForwardTester
+            host={str('log_forward_host')}
+            port={num('log_forward_port', 5514)}
+            protocol={str('log_forward_protocol') || 'udp'}
+          />
+        </Section>
+      )}
+
       {dataTab === 'backups' && (
         <Section title="Backup" onSave={backupSave.save} saving={backupSave.saving} saved={backupSave.saved} error={backupSave.error}
           help={{
