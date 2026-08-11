@@ -42,6 +42,7 @@ from app.api import (
     aia as aia_router,
     approvals as approvals_router,
     est as est_router,
+    scep as scep_router,
     enrollment_profiles as enrollment_profiles_router,
 )
 
@@ -186,6 +187,9 @@ app.include_router(aia_router.router,       prefix="/aia",              tags=["a
 # /.well-known/est and nowhere else — so it sits outside /api, and before
 # the SPA catch-all.
 app.include_router(est_router.router,       prefix="/.well-known/est",  tags=["est"])
+# SCEP (RFC 8894). Also outside /api and before the SPA catch-all — /scep is
+# the conventional path devices are configured with.
+app.include_router(scep_router.router,      prefix="/scep",             tags=["scep"])
 
 # -- Health check ------------------------------------------------------------------
 

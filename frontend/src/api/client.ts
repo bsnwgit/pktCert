@@ -688,7 +688,6 @@ export interface AlertRule {
   threshold: number | null
   severity: 'info' | 'warning' | 'critical'
   enabled: boolean
-  cooldown_min: number
   channels: string[]
   created_at: string
   params: Record<string, unknown>

@@ -28,7 +28,7 @@ _CONDITION_TYPES = set(alert_conditions.CONDITIONS)
 # couldn't target them because this set was narrower than the senders available.
 _CHANNEL_TYPES = notifications.CHANNEL_TYPES
 
-_CSV_COLUMNS = ["name", "condition_type", "threshold", "severity", "enabled", "cooldown_min", "channels"]
+_CSV_COLUMNS = ["name", "condition_type", "threshold", "severity", "enabled", "channels"]
 
 
 class RuleRequest(BaseModel):
@@ -37,7 +37,6 @@ class RuleRequest(BaseModel):
     threshold: float | None = None
     severity: str = "warning"
     enabled: bool = True
-    cooldown_min: int = 15
     channels: list[str] = ["inapp"]
     # Whatever this condition needs — see app/cert/alert_conditions.py. Absent
     # values fall back to the legacy `threshold` column and then the
@@ -81,8 +80,7 @@ def _rule_out(r) -> dict:
     return {
         "id": r["id"], "name": r["name"], "condition_type": r["condition_type"],
         "threshold": r["threshold"], "severity": r["severity"],
-        "enabled": bool(r["enabled"]), "cooldown_min": r["cooldown_min"],
-        "channels": channels, "created_at": r["created_at"],
+        "enabled": bool(r["enabled"]), "channels": channels, "created_at": r["created_at"],
         "params": _json_or(r, "params_json", {}),
         "scope": _json_or(r, "scope_json", {}),
     }
@@ -123,7 +121,7 @@ async def export_rules(user: AdminUser, db: aiosqlite.Connection = Depends(get_d
         writer.writerow({
             "name": r["name"], "condition_type": r["condition_type"],
             "threshold": r["threshold"] if r["threshold"] is not None else "",
-            "severity": r["severity"], "enabled": int(r["enabled"]), "cooldown_min": r["cooldown_min"],
+            "severity": r["severity"], "enabled": int(r["enabled"]),
             "channels": ",".join(channels),
         })
     buf.seek(0)
@@ -159,10 +157,6 @@ async def import_rules_csv(user: AdminUser, file: UploadFile = File(...), db: ai
             continue
         severity = (row.get("severity") or "warning").strip() or "warning"
         enabled = (row.get("enabled") or "1").strip() not in ("0", "false", "False", "")
-        try:
-            cooldown_min = int((row.get("cooldown_min") or "15").strip() or 15)
-        except ValueError:
-            cooldown_min = 15
         channels_raw = (row.get("channels") or "inapp").strip()
         channels = [c.strip() for c in channels_raw.split(",") if c.strip() in _CHANNEL_TYPES] or ["inapp"]
 
@@ -170,7 +164,7 @@ async def import_rules_csv(user: AdminUser, file: UploadFile = File(...), db: ai
             await db.execute(
                 """INSERT INTO alert_rules (name, condition_type, threshold, severity, enabled, cooldown_min, channels)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (name, condition_type, threshold, severity, int(enabled), cooldown_min, json.dumps(channels)),
+                (name, condition_type, threshold, severity, int(enabled), 0, json.dumps(channels)),
             )
             created += 1
         except aiosqlite.IntegrityError as e:
@@ -189,8 +183,8 @@ async def create_rule(body: RuleRequest, user: AdminUser, db: aiosqlite.Connecti
     cur = await db.execute(
         """INSERT INTO alert_rules (name, condition_type, threshold, severity, enabled, cooldown_min,
            channels, params_json, scope_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
-        (body.name, body.condition_type, body.threshold, body.severity, int(body.enabled), body.cooldown_min,
+           VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?) RETURNING *""",
+        (body.name, body.condition_type, body.threshold, body.severity, int(body.enabled),
          json.dumps(channels), json.dumps(body.params or {}), json.dumps(body.scope or {})),
     )
     row = await cur.fetchone()
@@ -206,8 +200,8 @@ async def update_rule(rule_id: int, body: RuleRequest, user: AdminUser, db: aios
     channels = [c for c in body.channels if c in _CHANNEL_TYPES] or ["inapp"]
     await db.execute(
         """UPDATE alert_rules SET name = ?, condition_type = ?, threshold = ?, severity = ?, enabled = ?,
-           cooldown_min = ?, channels = ?, params_json = ?, scope_json = ? WHERE id = ?""",
-        (body.name, body.condition_type, body.threshold, body.severity, int(body.enabled), body.cooldown_min,
+           channels = ?, params_json = ?, scope_json = ? WHERE id = ?""",
+        (body.name, body.condition_type, body.threshold, body.severity, int(body.enabled),
          json.dumps(channels), json.dumps(body.params or {}), json.dumps(body.scope or {}), rule_id),
     )
     await db.commit()
