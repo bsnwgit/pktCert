@@ -41,8 +41,12 @@ checkout needed):
 - [Discovery: Certificate Transparency Search](#discovery-certificate-transparency-search)
 - [Certificate Inventory](#certificate-inventory)
 - [Certificate Authorities](#certificate-authorities)
+- [Offline Root CA](#offline-root-ca)
 - [Issuance Templates](#issuance-templates)
 - [Issuing & Revoking Certificates](#issuing--revoking-certificates)
+- [Renewal](#renewal)
+- [Separation of Duties](#separation-of-duties)
+- [Device Enrolment (EST)](#device-enrolment-est)
 - [External Certificates & Secret Storage](#external-certificates--secret-storage)
 - [Settings Layout](#settings-layout)
 - [Configuration Reference](#configuration-reference)
@@ -144,10 +148,37 @@ as certificates approach or pass their expiration date.
 ## Certificate Authorities
 
 Generate a new root (self-signed) or intermediate (signed by a root you
-control) CA, or import an existing cert+key pair. CA private keys are
-Fernet-encrypted at rest and are **never** returned by any API response —
-they're decrypted only in-process, for signing. Each CA exposes a CRL
-endpoint covering its own revoked, internally-issued certificates.
+control) CA, or import an existing cert+key pair. Imports are validated —
+the key must match the certificate, and the certificate must actually be
+usable as a CA. CA private keys are Fernet-encrypted at rest and are **never**
+returned by any API response; they're decrypted only in-process, for signing.
+
+CAs can be **constrained** at creation: a path length capping how many CAs may
+sit beneath them (intermediates default to 0), and NameConstraints limiting
+what names they may certify at all. A CA restricted to `.corp.example.com`
+cannot mint a working certificate for anything else even if its key is stolen.
+
+Each CA publishes a CRL at `/crl/{id}.crl` and its certificate at
+`/aia/{id}.crt` — both unauthenticated, both referenced by extensions inside
+every certificate it issues, so relying parties can check revocation and build
+a chain.
+
+Retire a CA by **disabling** it: it stops issuing but keeps publishing its CRL,
+because the certificates it already issued are still deployed. Deleting is only
+possible for a CA that never issued anything.
+
+## Offline Root CA
+
+The root's private key can stay out of pktCert entirely. Register the root by
+**certificate only**, generate an intermediate keypair and CSR here, sign that
+CSR on the machine holding the root key, and import the result. Day-to-day
+issuance runs off the intermediate, so a compromise of this server costs an
+intermediate you can revoke rather than the root every machine trusts.
+
+An offline CA cannot sign — including its own CRL, which is the point.
+Revocations under it are published by signing the CRL where the key lives and
+uploading it. See
+[PKI-and-Discovery.md](docs/PKI-and-Discovery.md#offline-root).
 
 ## Issuance Templates
 
@@ -165,6 +196,42 @@ encrypted for later download. Signing an externally-generated CSR (so the
 private key never leaves the requester's machine) is available via the API
 (`POST /api/certificates/csr`). Revoking a certificate is terminal, marks it
 in the inventory, and includes it in its CA's next CRL.
+
+## Renewal
+
+`POST /api/certificates/{id}/renew` reissues the same subject and SANs from
+the same CA and template, always with a **fresh keypair** — re-certifying the
+old public key would carry any compromise of it into the replacement.
+
+The previous certificate is marked **superseded**, not revoked: it stays valid
+so the running service keeps working until someone installs the replacement,
+and stops raising expiry alerts because that replacement already exists.
+
+Auto-renewal is opt-in per certificate with its own window. It does not
+install anything — it removes the "nobody noticed" failure, not the deployment
+step.
+
+## Separation of Duties
+
+Optional and **off by default**. When enabled per action (Settings → Cert
+Settings), issuing or revoking records a request instead of acting, and a
+*different* admin approves it — the approval is what performs the operation.
+Self-approval is refused, so a single-admin install should leave this off; the
+Approvals page detects that case and says so.
+
+## Device Enrolment (EST)
+
+Devices request their own certificates over EST (RFC 7030) at
+`/.well-known/est/{cacerts,simpleenroll,simplereenroll,csrattrs}` — the device
+generates its own key and pktCert never sees it.
+
+Authorisation is an **enrolment profile**: a shared secret bound to one CA and
+one template, optionally restricted to a name suffix and a maximum number of
+certificates. Managed under Settings → Enrolment; the secret is shown once and
+encrypted at rest thereafter.
+
+EST requires TLS, and enrolment over plain HTTP is refused — the request
+carries a secret that yields a trusted certificate.
 
 ### Passphrase-protecting the private key
 
