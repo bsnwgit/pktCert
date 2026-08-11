@@ -88,7 +88,6 @@ interface RuleFormData {
   condition_type: AlertConditionType
   threshold: number
   severity: 'info' | 'warning' | 'critical'
-  cooldown_min: string
   channels: string[]
   params: Record<string, unknown>
   scope: Record<string, unknown>
@@ -97,14 +96,14 @@ interface RuleFormData {
 function fromRule(r: AlertRule): RuleFormData {
   return {
     name: r.name, condition_type: r.condition_type, threshold: r.threshold ?? 85,
-    severity: r.severity, cooldown_min: String(r.cooldown_min), channels: r.channels,
+    severity: r.severity, channels: r.channels,
     params: r.params ?? {}, scope: r.scope ?? {},
   }
 }
 
 const EMPTY_RULE: RuleFormData = {
   name: '', condition_type: 'cert_expiring', threshold: 30,
-  severity: 'warning', cooldown_min: '15', channels: ['inapp'],
+  severity: 'warning', channels: ['inapp'],
   params: {}, scope: {},
 }
 
@@ -206,10 +205,7 @@ function RuleForm({ initial, conditions, onSave, onCancel, saving }: {
             <option value="critical">Critical</option>
           </select>
         </div>
-        <div>
-          <label className="block text-xs text-white mb-1">Cooldown (minutes)</label>
-          <input type="number" min={0} max={1440} value={form.cooldown_min} onChange={e => set('cooldown_min', e.target.value)} className={inp} />
-        </div>
+
       </div>
 
       {condition && condition.params.length > 0 && (
@@ -412,7 +408,6 @@ export default function Alerts() {
         // existed; new rules carry their days value in params.
         threshold: null,
         severity: form.severity, enabled: true,
-        cooldown_min: parseInt(form.cooldown_min) || 15,
         channels: form.channels,
         params: form.params, scope: form.scope,
       }
@@ -433,7 +428,7 @@ export default function Alerts() {
 
   const handleDownloadTemplate = () => {
     const rows = [
-      ['name', 'condition_type', 'threshold', 'severity', 'enabled', 'cooldown_min', 'channels'],
+      ['name', 'condition_type', 'threshold', 'severity', 'enabled', 'channels'],
       ['Certs expiring in 30 days', 'cert_expiring', '30', 'warning', 'true', '15', 'inapp,email'],
     ]
     const csv = rows.map(r => r.map(v => `"${v.replace(/"/g, '""')}"`).join(',')).join('\n')
@@ -481,7 +476,7 @@ export default function Alerts() {
             <h1 className="text-xl font-bold text-white">Alerts</h1>
             <HelpButton title="Alerts — How It Works">
               <p>Rules watch certificate and CA expiration windows, revocations, and scan targets stuck in an error state — each rule fires an event when its condition is met, and auto-resolves once it clears (revocation is terminal and never auto-resolves).</p>
-              <p>A rule watches for one <span className="text-gray-300 font-medium">condition</span> — expiry, a key that's too short, a SHA-1 signature, a self-signed certificate, an issuer you don't control, a CRL about to lapse, and more. Each condition has its own settings, so you decide what "too short" or "too soon" means here rather than living with a number someone else picked.</p><p><span className="text-gray-300 font-medium">Limit to</span> narrows a rule to part of the inventory — one source, a name or host pattern. Narrow rules are the ones that get acted on; a rule covering everything is noise on day one and ignored by day three.</p><p>Events notify on whichever channels a rule has enabled — in-app, email, Slack, PagerDuty, webhook, or TraceCat. Every channel except in-app must first be configured and enabled under Settings → Notifications; a rule targeting an unconfigured channel is skipped rather than failed. Only the tick that opens an event notifies, so a certificate that stays expiring won't re-notify every minute.</p>
+              <p>A rule watches for one <span className="text-gray-300 font-medium">condition</span> — expiry, a key that's too short, a SHA-1 signature, a self-signed certificate, an issuer you don't control, a CRL about to lapse, and more. Each condition has its own settings, so you decide what "too short" or "too soon" means here rather than living with a number someone else picked.</p><p><span className="text-gray-300 font-medium">Limit to</span> narrows a rule to part of the inventory — one source, a name or host pattern. Narrow rules are the ones that get acted on; a rule covering everything is noise on day one and ignored by day three.</p><p>An alert stays quiet while it is open and untouched, so a persisting problem doesn't re-notify every minute. <span className="text-gray-300 font-medium">Acknowledging or resolving it dismisses it</span> — and if the cause is still there, it raises again on the next check. Clearing the board doesn't silence a live problem. Fix the underlying issue and nothing re-fires; the open alert resolves itself instead. Revocation alerts are the exception: they record something that already happened, so acknowledging one is final.</p><p>Events notify on whichever channels a rule has enabled — in-app, email, Slack, PagerDuty, webhook, or TraceCat. Every channel except in-app must first be configured and enabled under Settings → Notifications; a rule targeting an unconfigured channel is skipped rather than failed. Only the tick that opens an event notifies, so a certificate that stays expiring won't re-notify every minute.</p>
               <p>Import Rules CSV lets you bulk-create rules instead of adding them one at a time.</p>
             </HelpButton>
           </div>
@@ -681,7 +676,6 @@ export default function Alerts() {
                   <th className="px-4 py-3 text-left text-xs font-medium text-white">Threshold</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-white">Severity</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-white">Channels</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-white">Cooldown</th>
                   {isAdmin && <th className="px-4 py-3"></th>}
                 </tr>
               </thead>
@@ -704,7 +698,6 @@ export default function Alerts() {
                       <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${SEV_STYLES[rule.severity] ?? SEV_STYLES.info}`}>{rule.severity}</span>
                     </td>
                     <td className="px-4 py-3 text-xs text-white">{rule.channels.join(', ')}</td>
-                    <td className="px-4 py-3 text-white">{rule.cooldown_min}m</td>
                     {isAdmin && (
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
@@ -741,7 +734,7 @@ export default function Alerts() {
             )}
             <div className="bg-gray-800/60 rounded-lg px-3 py-2 mb-4">
               <p className="text-xs font-medium text-white mb-1">CSV columns (header row required)</p>
-              <p className="text-xs font-mono text-white break-all">name, condition_type, threshold, severity, enabled, cooldown_min, channels</p>
+              <p className="text-xs font-mono text-white break-all">name, condition_type, threshold, severity, enabled, channels</p>
               <p className="text-xs text-white mt-1">channels: comma-separated (e.g. inapp,email).</p>
             </div>
             <div className="flex items-center justify-between">

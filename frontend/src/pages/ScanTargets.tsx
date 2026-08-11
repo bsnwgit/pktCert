@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, ScanTarget } from '../api/client'
 import { useAuth } from '../store/auth'
 import HelpButton from '../components/HelpButton'
+import Pagination from '../components/Pagination'
+
+const PAGE_SIZE_DEFAULT = 25
+const PAGE_SIZE_OPTIONS = [25, 50, 75, 100]
 
 const STATUS_STYLES: Record<string, string> = {
   ok: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40',
@@ -90,6 +94,8 @@ export default function ScanTargets() {
   const isAdmin = user?.role === 'admin'
   const [targets, setTargets] = useState<ScanTarget[]>([])
   const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE_DEFAULT)
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<ScanTarget | null>(null)
   const [saving, setSaving] = useState(false)
@@ -150,6 +156,15 @@ export default function ScanTargets() {
     }
   }
 
+  const totalPages = Math.max(1, Math.ceil(targets.length / pageSize))
+  const pageClamped = Math.min(page, totalPages)
+  const paged = useMemo(
+    () => targets.slice((pageClamped - 1) * pageSize, pageClamped * pageSize),
+    [targets, pageClamped, pageSize],
+  )
+  const firstShown = targets.length === 0 ? 0 : (pageClamped - 1) * pageSize + 1
+  const lastShown = (pageClamped - 1) * pageSize + paged.length
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -172,6 +187,22 @@ export default function ScanTargets() {
       {editing && <TargetForm initial={fromTarget(editing)} onSave={handleSave} onCancel={() => setEditing(null)} saving={saving} />}
       {error && <p className="text-sm text-red-400">{error}</p>}
 
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <span className="text-xs text-white">
+          {targets.length === 0
+            ? 'No scan targets'
+            : `Showing ${firstShown.toLocaleString()}–${lastShown.toLocaleString()} of ${targets.length.toLocaleString()} target${targets.length !== 1 ? 's' : ''}`}
+        </span>
+        <div className="flex items-center gap-2">
+          <label htmlFor="targets-per-page" className="text-xs text-gray-400">Targets per page:</label>
+          <select id="targets-per-page" value={pageSize}
+            onChange={e => { setPageSize(Number(e.target.value)); setPage(1) }}
+            className="text-sm bg-gray-800 border border-gray-700 text-white rounded-lg px-2 py-1 focus:outline-none focus:border-sky-500">
+            {PAGE_SIZE_OPTIONS.map(size => <option key={size} value={size}>{size}</option>)}
+          </select>
+        </div>
+      </div>
+
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
         <table className="w-full text-sm">
           <thead>
@@ -187,7 +218,7 @@ export default function ScanTargets() {
           </thead>
           <tbody className="divide-y divide-gray-800/50">
             {loading && <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-white">Loading…</td></tr>}
-            {!loading && targets.map(t => (
+            {!loading && paged.map(t => (
               <tr key={t.id} className="hover:bg-gray-800/30 transition-colors">
                 <td className="px-4 py-3 font-medium text-white">{t.name}</td>
                 <td className="px-4 py-3 text-white font-mono text-xs">{t.host || t.cidr}</td>
@@ -220,6 +251,12 @@ export default function ScanTargets() {
           </tbody>
         </table>
       </div>
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center">
+          <Pagination page={pageClamped} totalPages={totalPages} onChange={setPage} />
+        </div>
+      )}
     </div>
   )
 }

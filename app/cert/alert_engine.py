@@ -14,9 +14,19 @@ event is made here, so adding a condition needs no knowledge of this file.
 
 A newly opened event is dispatched to whichever channels its rule enables
 (app/notifications.py), with every outcome recorded in notification_log.
-Only the opening tick notifies — an event that merely stays open does not
-re-notify, or an expiring certificate would page someone every 60 seconds
-until it was renewed.
+
+An alert stays quiet for as long as it is open and untouched, so a persisting
+problem does not re-notify every 60 seconds. Acknowledging or resolving it
+dismisses it — and a dismissed alert whose cause is still present raises
+again on the next evaluation, because clearing the board must not silence a
+live problem.
+
+"Still present" is decided by the condition itself: a re-alert only happens
+because the evaluator still reports that target as matching. Fix the
+underlying problem and nothing re-fires; the open event auto-resolves instead.
+Terminal conditions (revocation) are the exception — the event records
+something that already happened and cannot un-happen, so acknowledging one is
+final rather than a snooze.
 
 Also runs a nightly-scale expiry-status refresh so certificates.status
 (valid/expiring/expired) stays current even between scans, and exposes
@@ -104,46 +114,65 @@ class AlertEngine:
 
 
 async def _fire_or_keep(db: aiosqlite.Connection, rule, certificate_id=None, ca_id=None,
-                         message: str = "", value: Optional[float] = None):
-    """Open a new alert_event if one isn't already active for this
-    rule+target, and it hasn't auto-resolved within the rule's cooldown
-    window (so a flapping condition doesn't reopen a new event every
-    evaluation tick). A newly opened event is then dispatched to whichever
-    channels the rule has enabled."""
+                         message: str = "", value: Optional[float] = None,
+                         terminal: bool = False):
+    """Open an alert_event unless one is already open and untouched for this
+    rule+target, then dispatch it to the rule's channels."""
+    # An alert stays quiet for exactly as long as it is open and untouched.
+    #
+    # "Open and untouched" means active AND not acknowledged. Acknowledging or
+    # resolving an alert dismisses it, and a dismissed alert whose cause is
+    # still present raises again on the next evaluation — otherwise clearing
+    # the board would silence a live problem, which is the worst thing an
+    # alerting system can do.
+    #
     # Some conditions have no certificate or CA to key on — a scan target that
     # won't answer, an address failing enrolment. For those the message *is*
     # the identity, so deduplicating on the ids alone would collapse every
     # unreachable target into one alert and hide all but the first.
+    # A terminal condition is the exception. Revocation has already happened
+    # and will never stop having happened, so its "issue" is permanent —
+    # re-raising it after every acknowledgement would nag forever about
+    # something nobody can act on. There, acknowledging is final.
+    acked_clause = "" if terminal else " AND acked = 0"
+
     targetless = certificate_id is None and ca_id is None
     if targetless:
         async with db.execute(
-            "SELECT id FROM alert_events WHERE rule_id = ? AND active = 1 AND message = ?",
+            f"SELECT id FROM alert_events WHERE rule_id = ? AND active = 1{acked_clause} AND message = ?",
             (rule["id"], message),
         ) as cur:
             existing = await cur.fetchone()
     else:
         async with db.execute(
-            """SELECT id FROM alert_events
-               WHERE rule_id = ? AND active = 1
-                 AND certificate_id IS ? AND ca_id IS ?""",
+            f"""SELECT id FROM alert_events
+                WHERE rule_id = ? AND active = 1{acked_clause}
+                  AND certificate_id IS ? AND ca_id IS ?""",
             (rule["id"], certificate_id, ca_id),
         ) as cur:
             existing = await cur.fetchone()
     if existing:
         return
 
-    cooldown_min = rule["cooldown_min"] or 0
-    if cooldown_min:
-        async with db.execute(
-            """SELECT id FROM alert_events
-               WHERE rule_id = ? AND certificate_id IS ? AND ca_id IS ?
-                 AND resolved_at >= datetime('now', ?)
-               ORDER BY resolved_at DESC LIMIT 1""",
-            (rule["id"], certificate_id, ca_id, f"-{cooldown_min} minutes"),
-        ) as cur:
-            recently_resolved = await cur.fetchone()
-        if recently_resolved:
-            return
+    # Re-raising because the old one was dismissed: retire that dismissed event
+    # rather than leaving it open alongside its replacement, or the active list
+    # accumulates a row per acknowledgement of the same unfixed problem.
+    if not terminal:
+        if targetless:
+            await db.execute(
+                """UPDATE alert_events SET active = 0, resolved = 1, auto_resolved = 1,
+                   resolved_at = datetime('now')
+                   WHERE rule_id = ? AND active = 1 AND acked = 1 AND message = ?""",
+                (rule["id"], message),
+            )
+        else:
+            await db.execute(
+                """UPDATE alert_events SET active = 0, resolved = 1, auto_resolved = 1,
+                   resolved_at = datetime('now')
+                   WHERE rule_id = ? AND active = 1 AND acked = 1
+                     AND certificate_id IS ? AND ca_id IS ?""",
+                (rule["id"], certificate_id, ca_id),
+            )
 
     cur = await db.execute(
         """INSERT INTO alert_events
@@ -239,6 +268,7 @@ async def _evaluate_rule(db: aiosqlite.Connection, rule) -> None:
         log.error(f"Alert rule '{rule['name']}' ({rule['condition_type']}) failed to evaluate: {e}")
         return
 
+    terminal = rule["condition_type"] in alert_conditions.TERMINAL
     still_bad_certs, still_bad_cas, still_bad_messages = set(), set(), set()
     for target_id, message in matches:
         still_bad_messages.add(message)
@@ -248,9 +278,10 @@ async def _evaluate_rule(db: aiosqlite.Connection, rule) -> None:
             still_bad_certs.add(certificate_id)
         if ca_id is not None:
             still_bad_cas.add(ca_id)
-        await _fire_or_keep(db, rule, certificate_id=certificate_id, ca_id=ca_id, message=message)
+        await _fire_or_keep(db, rule, certificate_id=certificate_id, ca_id=ca_id,
+                            message=message, terminal=terminal)
 
-    if rule["condition_type"] not in alert_conditions.TERMINAL:
+    if not terminal:
         await _auto_resolve(db, rule, still_bad_certs, still_bad_cas, still_bad_messages)
 
 

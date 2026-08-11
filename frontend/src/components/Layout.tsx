@@ -73,7 +73,9 @@ const NAV = [
   { to: '/scan-targets',            label: 'Scan Targets',           icon: '⌕', adminOnly: false },
   { to: '/certificates',            label: 'Certificates',           icon: '▤', adminOnly: false, dividerBefore: true },
   { to: '/certificate-authorities', label: 'Certificate Authorities', icon: '⛨', adminOnly: false },
-  { to: '/approvals',               label: 'Approvals',              icon: '✓', adminOnly: false },
+  // Hidden unless separation of duties is switched on — see approvalsVisible
+  // below. A queue nobody uses is just a dead link in the sidebar.
+  { to: '/approvals',               label: 'Approvals',              icon: '✓', adminOnly: false, approvalsOnly: true },
   { to: '/alerts',                  label: 'Alerts',                 icon: '△', adminOnly: false, dividerBefore: true },
   { to: '/logs',                    label: 'Logs',                   icon: '☰', adminOnly: false },
   { to: '/settings',                label: 'Settings',               icon: '⚙', adminOnly: true, dividerBefore: true },
@@ -83,6 +85,7 @@ export default function Layout({ children, chromeless = false }: { children: Rea
   const { user, logout } = useAuth()
   const navigate = useNavigate()
   const [unacked, setUnacked] = useState<number>(0)
+  const [approvalsVisible, setApprovalsVisible] = useState(false)
   const [showChangePw, setShowChangePw] = useState(false)
 
   useEffect(() => {
@@ -99,8 +102,24 @@ export default function Layout({ children, chromeless = false }: { children: Rea
         // silently ignore — badge just won't show if API is down
       }
     }
+    // Show Approvals only when it's actually in use. Pending requests keep it
+    // visible even after the setting is turned back off, so anything already
+    // raised can still be actioned rather than being stranded behind a hidden
+    // page.
+    const checkApprovals = async () => {
+      try {
+        const cfg = await api.getApprovalConfig()
+        setApprovalsVisible(
+          cfg.issuance_approval_required || cfg.revocation_approval_required || cfg.pending_count > 0,
+        )
+      } catch {
+        setApprovalsVisible(false)
+      }
+    }
+
     tick()
-    const id = setInterval(tick, 30_000)
+    checkApprovals()
+    const id = setInterval(() => { tick(); checkApprovals() }, 30_000)
     return () => clearInterval(id)
   }, [chromeless])
 
@@ -126,7 +145,8 @@ export default function Layout({ children, chromeless = false }: { children: Rea
         </div>
 
         <nav className="flex-1 px-2 py-4 space-y-0.5">
-          {NAV.filter(n => !n.adminOnly || user?.role === 'admin').map(({ to, label, icon, dividerBefore }) => (
+          {NAV.filter(n => (!n.adminOnly || user?.role === 'admin') && (!n.approvalsOnly || approvalsVisible))
+            .map(({ to, label, icon, dividerBefore }) => (
             <div key={to}>
               {dividerBefore && <div className="h-0.5 bg-gray-600 mx-1 my-2 rounded-full" />}
               <NavLink
