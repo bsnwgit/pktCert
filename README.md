@@ -46,7 +46,7 @@ checkout needed):
 - [Issuing & Revoking Certificates](#issuing--revoking-certificates)
 - [Renewal](#renewal)
 - [Separation of Duties](#separation-of-duties)
-- [Device Enrolment (EST)](#device-enrolment-est)
+- [Device Enrolment (EST and SCEP)](#device-enrolment-est-and-scep)
 - [External Certificates & Secret Storage](#external-certificates--secret-storage)
 - [Settings Layout](#settings-layout)
 - [Configuration Reference](#configuration-reference)
@@ -90,14 +90,20 @@ systemd service. Credentials print once at the end — save them.
   static-file server needed).
 - **Cert/PKI engine (`app/cert/`):** `x509_utils.py` wraps the `cryptography`
   library for all key generation, CSR/cert signing, and CRL building;
-  `scanner.py` runs the active TLS discovery loop; `ct_search.py` queries
-  crt.sh/Censys; `alert_engine.py` evaluates expiry/revocation conditions.
+  `issuance.py` is the single path every issued certificate goes through;
+  `crl_manager.py` owns CRL publication and numbering; `renewal.py` runs the
+  auto-renewal loop; `scanner.py` runs the active TLS discovery loop;
+  `ct_search.py` queries crt.sh/Censys; `alert_conditions.py` declares what a
+  rule can watch for and `alert_engine.py` evaluates them;
+  `enrollment.py` + `scep_messages.py` back the EST/SCEP endpoints.
 - **Auth:** local JWT (bcrypt-hashed passwords) or SAML 2.0 SSO, plus an
   inbound Suite Token path so pktHub can proxy in with users pre-authenticated.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10+ (SCEP additionally needs `asn1crypto` — pure Python, in
+  `requirements.txt`; an existing install needs
+  `pip install -r requirements.txt` in its venv before SCEP will start)
 - Node.js + npm (only needed to build the frontend — see [Frontend Build &
   Deploy](#frontend-build--deploy) if unavailable at install time)
 - Ubuntu 22.04/24.04 LTS (install.sh targets apt; other distros need manual
@@ -141,9 +147,15 @@ live under Settings → Discovery & Alerts.
 ## Certificate Inventory
 
 The Certificates page is the unified view of everything pktCert knows
-about — scanned, CT-discovered, internally issued, or uploaded from an
-external CA. Status (valid/expiring/expired/revoked) updates automatically
-as certificates approach or pass their expiration date.
+about — scanned, CT-discovered, internally issued, enrolled by a device, or
+uploaded from an external CA. Status (valid/expiring/expired/revoked/
+superseded) updates automatically as certificates approach or pass their
+expiration date.
+
+Revoked certificates are hidden by default — they can't be renewed, don't
+expire in any way that matters, and only accumulate. The count of what's
+hidden is shown beside the filters; the checkbox brings them back, and
+selecting "Revoked" in the status filter shows them regardless.
 
 ## Certificate Authorities
 
@@ -219,7 +231,7 @@ Settings), issuing or revoking records a request instead of acting, and a
 Self-approval is refused, so a single-admin install should leave this off; the
 Approvals page detects that case and says so.
 
-## Device Enrolment (EST)
+## Device Enrolment (EST and SCEP)
 
 Devices request their own certificates over EST (RFC 7030) at
 `/.well-known/est/{cacerts,simpleenroll,simplereenroll,csrattrs}` — the device
@@ -232,6 +244,17 @@ encrypted at rest thereafter.
 
 EST requires TLS, and enrolment over plain HTTP is refused — the request
 carries a secret that yields a trusted certificate.
+
+**SCEP** (RFC 8894) is served at `/scep` for the hardware that doesn't speak
+EST — which is most network equipment: Cisco IOS and ASA, Juniper, Palo Alto,
+Fortinet, and MDM platforms pushing certificates to laptops and phones. A
+device authenticates with the profile secret as its *challenge password*;
+there is no username. SCEP does not require TLS, because its request body is
+already encrypted to the CA's public key.
+
+SCEP failures are returned as signed CertRep messages with a `pkiStatus` and
+`failInfo`, not as HTTP errors — a device that receives a bare 403 with no
+CertRep typically retries forever.
 
 ### Passphrase-protecting the private key
 
@@ -349,10 +372,30 @@ the provider didn't finish in time and suggests a shorter question.
 
 ## Alerting
 
-Rules watch certificate/CA expiration windows, revocations, and scan
-targets stuck in an error state. See Alerts → Rules to configure
-thresholds, severity, and notification channels (in-app, email, webhook,
-Slack, PagerDuty, TraceCat).
+Fifteen conditions, each with its own parameters, so the limits are yours
+rather than ones baked into the code: expiry windows, minimum key sizes,
+which signature algorithms count as broken, how long a validity period is too
+long — plus self-signed, wildcard, unknown-issuer, newly-discovered,
+certificate-changed-on-a-host, stale CRL, and repeated enrolment failures.
+Conditions are declared in `app/cert/alert_conditions.py` and the Alerts page
+renders its parameter inputs from that declaration, so a new condition needs
+no frontend change. Full table in
+[PKI-and-Discovery.md](docs/PKI-and-Discovery.md#alerting-conditions-parameters-and-scope).
+
+Rules also take a **scope** — one CA, one source, a name or host pattern.
+Empty means everything.
+
+**Repeat behaviour.** An alert stays quiet while it is open and untouched.
+Acknowledging or resolving dismisses it, and a dismissed alert whose cause is
+still present raises again on the next evaluation — clearing the board must
+not silence a live problem. Fix the underlying issue and nothing re-fires; the
+open event auto-resolves instead. Revocation is the exception: it records
+something that already happened, so acknowledging one is final.
+
+Notification channels are per rule: in-app, email, Slack, PagerDuty, webhook,
+TraceCat. Anything other than in-app must be configured under
+Settings → Notifications first; a rule targeting an unconfigured channel is
+recorded as *skipped* rather than failed.
 
 ## Suite Integration
 
@@ -451,6 +494,10 @@ python3 tests/test_est.py
 ```
 
 ```bash
+python3 tests/test_scep.py
+```
+
+```bash
 python3 tests/test_alert_conditions.py
 ```
 
@@ -473,6 +520,7 @@ python3 tests/test_export_stepup.py
 - **test_offline_root** — the whole offline ceremony, with the root key held
   only in the test and never given to the app
 - **test_est** — RFC 7030 enrolment: PKCS#7 responses, profile policy, secret rotation
+- **test_scep** — RFC 8894 enrolment driven by a real SCEP client built in the test
 - **test_alert_conditions** — that a parameter changes the outcome and a scope
   genuinely narrows, plus that pre-parameter rules keep working
 - **test_export_stepup** — password re-entry before the backup bundle downloads
@@ -483,7 +531,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Known Gaps / Fast-Follow Work
 
-- No ACME protocol server (RFC 8555) — issuance is UI/API-driven only.
+- No ACME protocol server (RFC 8555) — issuance is UI/API-driven, or via
+  EST/SCEP for devices.
 - No OCSP responder — revocation status is only available via CRL.
 - CA private keys for online CAs are encrypted at rest with a key in
   `config.yaml` on the same host; no PKCS#11/HSM support. An offline root

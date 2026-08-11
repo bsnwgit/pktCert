@@ -25,6 +25,11 @@ jinja2>=3.1.4
 
 # Secret-at-rest encryption (Fernet) + X.509/CA operations
 cryptography>=42.0.0
+# CMS/PKCS#7 with custom authenticated attributes, for SCEP (RFC 8894).
+# cryptography can encrypt, decrypt and sign PKCS#7, but its signature
+# builder cannot attach the messageType/transactionID/nonce attributes SCEP
+# carries inside signedData. Pure Python, no compiled extensions.
+asn1crypto>=1.5.1
 
 # Config
 pyyaml>=6.0.1

@@ -478,3 +478,86 @@ parameter for it, so nothing needed migrating and nothing changed meaning.
 Certificates that are revoked or superseded are excluded from every condition
 except "revoked" itself: a revoked certificate's problems are moot, and a
 superseded one's replacement already exists.
+
+### When an alert repeats
+
+An alert stays quiet for as long as it is **open and untouched** — a
+persisting problem doesn't re-notify on every 60-second tick.
+
+Acknowledging or resolving it dismisses it, and a dismissed alert whose cause
+is still present raises again on the next evaluation. Clearing the board must
+not silence a live problem. "Still present" is decided by the condition
+itself, so fixing the underlying issue stops it and auto-resolves the open
+event instead.
+
+A re-raise retires the dismissed event it replaces, so the active list doesn't
+accumulate a row per acknowledgement.
+
+**Revocation is the exception.** It records something that already happened
+and cannot un-happen, so acknowledging one is final rather than a snooze.
+
+There is no per-rule cooldown. It existed to stop a flapping condition
+reopening an event every tick, which directly contradicts re-alerting on
+dismissal — the two rules disagree about what happens after a dismissal, so it
+was removed rather than left as a control that half-worked.
+
+### Alerts with no certificate or CA
+
+Some conditions — an unreachable scan target, an address failing enrolment —
+have no certificate or CA to key on. Those deduplicate and reconcile on their
+**message**, which for them is the identity. Keying on the null ids instead
+collapsed every unreachable target into a single alert and auto-resolved each
+one on the very tick that opened it, so a target could be down for a week,
+re-alerting every minute, without an alert ever staying open.
+
+
+## SCEP enrolment
+
+`/scep` speaks RFC 8894, for the hardware that doesn't do EST — Cisco IOS and
+ASA, Juniper, Palo Alto, Fortinet, and MDM platforms issuing device
+certificates. One endpoint, distinguished by an `operation` parameter, because
+SCEP was designed for devices with minimal HTTP stacks:
+
+| Operation | |
+|---|---|
+| `GetCACert` | the CA certificate, or the chain as PKCS#7 |
+| `GetCACaps` | what this server supports |
+| `PKIOperation` | enrol — POST with a binary body, or GET with base64 in the query |
+
+A request is PKCS#7 SignedData whose content is PKCS#7 EnvelopedData encrypted
+to the CA, with the PKCS#10 inside that. The device signs the outer layer with
+a throwaway self-signed certificate it generates on the spot — it has no
+certificate yet, so that is all it can prove. Authorisation comes from the
+**challenge password** carried inside the CSR, matched against an enrolment
+profile's secret. There is no username.
+
+That makes SCEP's authentication weaker than EST's, which is exactly why a
+profile's name-suffix restriction and certificate cap matter more here.
+
+Unlike EST, SCEP does **not** require TLS. The request body is already
+encrypted to the CA's public key, so the challenge password isn't exposed to
+the network the way an EST secret over plain HTTP would be. Refusing plain
+HTTP would make the endpoint useless for the hardware it exists to serve.
+
+### Failures are SCEP messages, not HTTP errors
+
+A refused enrolment returns HTTP 200 with a signed CertRep carrying
+`pkiStatus = FAILURE` and a `failInfo`. Devices largely ignore HTTP status
+codes here; one that gets a 403 with no CertRep typically retries forever.
+The transactionID is echoed either way so the device can match the reply.
+
+### Implementation note
+
+`cryptography` handles the envelope and the signing, but its
+PKCS7SignatureBuilder cannot attach arbitrary authenticated attributes — and
+SCEP's protocol *is* a set of authenticated attributes (messageType,
+transactionID, senderNonce, pkiStatus, recipientNonce). The SignedData layer is
+therefore assembled in `app/cert/scep_messages.py` using `asn1crypto`, which
+models CMS properly, while every cryptographic operation stays with
+`cryptography`.
+
+One trap worth recording: the response envelope must be built with
+`PKCS7Options.Binary`. Without it the library applies S/MIME canonicalisation,
+turning every `0x0A` byte in the DER into `0x0D 0x0A` and silently corrupting
+the certificate bundle by a variable number of bytes — the device then receives
+something that isn't valid DER and fails with no useful diagnostic.
