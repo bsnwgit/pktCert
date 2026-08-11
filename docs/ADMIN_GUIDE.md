@@ -33,10 +33,17 @@ output, and are not recoverable afterward (see
 5. **Set discovery defaults** (Settings → Discovery & Alerts) — default
    scan schedule/ports, CT auto-discovery watched domains, expiry warning
    threshold.
-6. **Set up alert rules** (Alerts → Rules) and notification channels.
-7. **Set up backups** (Settings → Data → Backups) and confirm a manual run
-   succeeds.
-8. **Create accounts** for your team.
+6. **Set the CRL base URL** (Settings → Cert Settings) *before* issuing
+   anything you want revocation-checkable — it's baked into each certificate
+   at issuance, so changing it later has no effect on certificates already
+   signed.
+7. **Set up alert rules** (Alerts → Rules) and notification channels. Note
+   that channels other than in-app must be configured under
+   Settings → Notifications first.
+8. **Set up backups** (Settings → Data → Backups) and confirm a manual run
+   succeeds — and back up `config.yaml` separately, since snapshots
+   deliberately exclude it (see [Backup & Restore](#backup--restore)).
+9. **Create accounts** for your team.
 
 ## Finding your way around Settings
 
@@ -106,6 +113,46 @@ signing are all covered in depth in
 `app/cert/x509_utils.py` wraps the `cryptography` library for every
 signing operation — no external `openssl` process dependency.
 
+## Renewal
+
+`app/cert/renewal.py` runs every 10 minutes and reissues any certificate
+opted into auto-renewal that has entered its window. Manual renewal is the
+same code path, so an auto-renewed certificate is indistinguishable from a
+hand-issued one.
+
+**It installs nothing.** The new certificate and its freshly generated key are
+stored here; putting them on the server that serves them is still a human step
+or a job for whatever configuration management runs that host. Auto-renewal
+removes the "nobody noticed it was expiring" failure, not the deployment step
+— which is why it's opt-in per certificate rather than a global default.
+
+Renewal marks the previous certificate `superseded` rather than revoking it,
+so the running service survives until the replacement is installed. Revoke the
+old one yourself once it is.
+
+The loop skips certificates whose CA is disabled, offline, or still awaiting
+its signed certificate, and anything whose template has since been deleted —
+those need a human decision rather than a silent guess.
+
+## Offline root CA
+
+The root's private key can stay entirely outside pktCert. Register the root by
+certificate alone (Certificate Authorities → + Add CA → **Offline Root**),
+generate an intermediate CSR here, sign it on the machine holding the root
+key, and import the result. Full procedure in
+[PKI-and-Discovery.md](PKI-and-Discovery.md#offline-root).
+
+Two operational consequences worth knowing before you commit to it:
+
+- An offline CA **cannot sign its own CRL**. Revocations under it are published
+  by signing the CRL on the machine that holds the key and uploading it
+  (**Publish CRL**). Until one is uploaded, that CA's distribution point
+  returns 404 — which to a relying party reads as "no CRL published here".
+- An intermediate sits in `pending_signature` and can issue nothing until its
+  signed certificate comes back. Its CSR can be re-downloaded for as long as
+  it's pending, because the round trip to an air-gapped machine is rarely done
+  in one sitting and regenerating would produce a different key.
+
 ## Approvals (separation of duties)
 
 Off by default, and off means genuinely unchanged — issuing and revoking stay
@@ -117,7 +164,7 @@ Nobody can approve their own request. That has a practical consequence worth
 knowing before you switch it on: **an install with one admin account cannot
 approve anything**. The Approvals page detects that and says so.
 
-## Device enrolment (EST)
+## Device enrolment (EST and SCEP)
 
 Settings → Enrolment manages the profiles devices authenticate with. A profile
 is a shared secret bound to one CA and one template, optionally limited to a
@@ -133,6 +180,20 @@ pktCert refuses enrolment over non-TLS connections. `X-Forwarded-Proto` is
 honoured when TLS terminates at a reverse proxy. For an isolated lab network
 where you accept the risk, set `est_allow_insecure_http`.
 
+**SCEP** (RFC 8894) is at `/scep`, for equipment that doesn't speak EST — most
+network hardware, and every MDM. Set the profile's protocol to `scep`; the
+device uses the profile secret as its *challenge password* and there is no
+username. SCEP does **not** require TLS: its request body is already encrypted
+to the CA's public key, so the challenge password isn't exposed the way an EST
+secret over plain HTTP would be.
+
+SCEP needs an RSA CA — its envelope uses RSA key transport, so a profile
+pointing at an EC CA cannot complete an enrolment.
+
+SCEP support adds one dependency, `asn1crypto` (pure Python, no compiled
+extensions). It's in `requirements.txt`; an existing install needs
+`pip install -r requirements.txt` inside its venv before SCEP will start.
+
 ## Alerting
 
 Fifteen condition types, each with its own settings — expiry windows,
@@ -147,17 +208,34 @@ Rules also take a **scope** — one CA, one source, a name or host pattern.
 Empty means everything. Narrow rules are the ones that get acted on.
 
 Create rules under Alerts → Rules (an inline form, no modal). The engine
-evaluates every 60 seconds. Each rule has a **cooldown** (minutes, default 15)
-so a flapping condition doesn't open a new event every tick, and per-rule
-notification channels: `inapp`, `email`, `slack`, `pagerduty`, `webhook`,
-`tracecat`. Channels other than in-app must be configured and enabled under
-Settings → Notifications first; a rule targeting an unconfigured channel is
-recorded as *skipped* rather than failed.
+evaluates every 60 seconds. Each rule has per-rule notification channels:
+`inapp`, `email`, `slack`, `pagerduty`, `webhook`, `tracecat`. Channels other
+than in-app must be configured and enabled under Settings → Notifications
+first; a rule targeting an unconfigured channel is recorded as *skipped*
+rather than failed. Every delivery attempt is recorded in `notification_log`.
 
-Only the tick that **opens** an event notifies. An event that stays open does
-not re-notify, or an expiring certificate would page someone every minute
-until it was renewed. Revocation alerts never auto-resolve. Every delivery
-attempt is recorded in `notification_log`.
+### When an alert repeats
+
+An alert stays quiet for as long as it is **open and untouched**, so a
+persisting problem doesn't re-notify every minute.
+
+**Acknowledging or resolving dismisses it** — and a dismissed alert whose cause
+is still present raises again on the next evaluation. Clearing the board must
+not silence a live problem. "Still present" is decided by the condition itself,
+so fixing the underlying issue stops it and auto-resolves the open event
+instead; nothing re-fires.
+
+A re-raise retires the dismissed event it replaces, so the active list doesn't
+accumulate one row per acknowledgement.
+
+**Revocation is the exception.** It records something that already happened and
+cannot un-happen, so acknowledging one is final rather than a snooze —
+otherwise it would nag forever about something nobody can act on.
+
+There is no cooldown setting. It existed to stop a flapping condition
+reopening every tick, and re-alert-on-dismissal makes it self-contradictory:
+the two rules disagree about what should happen after a dismissal. It was
+removed rather than left as a control that half-worked.
 
 Resolved alert events, and their delivery records, are purged automatically
 after their retention window (default 90 days, Settings → Data → Storage).

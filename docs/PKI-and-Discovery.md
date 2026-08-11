@@ -479,6 +479,37 @@ Certificates that are revoked or superseded are excluded from every condition
 except "revoked" itself: a revoked certificate's problems are moot, and a
 superseded one's replacement already exists.
 
+### When an alert repeats
+
+An alert stays quiet for as long as it is **open and untouched** — a
+persisting problem doesn't re-notify on every 60-second tick.
+
+Acknowledging or resolving it dismisses it, and a dismissed alert whose cause
+is still present raises again on the next evaluation. Clearing the board must
+not silence a live problem. "Still present" is decided by the condition
+itself, so fixing the underlying issue stops it and auto-resolves the open
+event instead.
+
+A re-raise retires the dismissed event it replaces, so the active list doesn't
+accumulate a row per acknowledgement.
+
+**Revocation is the exception.** It records something that already happened
+and cannot un-happen, so acknowledging one is final rather than a snooze.
+
+There is no per-rule cooldown. It existed to stop a flapping condition
+reopening an event every tick, which directly contradicts re-alerting on
+dismissal — the two rules disagree about what happens after a dismissal, so it
+was removed rather than left as a control that half-worked.
+
+### Alerts with no certificate or CA
+
+Some conditions — an unreachable scan target, an address failing enrolment —
+have no certificate or CA to key on. Those deduplicate and reconcile on their
+**message**, which for them is the identity. Keying on the null ids instead
+collapsed every unreachable target into a single alert and auto-resolved each
+one on the very tick that opened it, so a target could be down for a week,
+re-alerting every minute, without an alert ever staying open.
+
 
 ## SCEP enrolment
 
