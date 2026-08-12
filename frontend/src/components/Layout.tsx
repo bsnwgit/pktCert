@@ -3,7 +3,6 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../store/auth'
 import { api } from '../api/client'
 import clsx from 'clsx'
-import AiAssistant from './AiAssistant'
 import { BrandLockup } from './Brand'
 
 function ChangePasswordModal({ onClose }: { onClose: () => void }) {
@@ -224,8 +223,6 @@ export default function Layout({ children, chromeless = false }: { children: Rea
           {children}
         </main>
       </div>
-
-      <AiAssistant />
       {showChangePw && <ChangePasswordModal onClose={() => setShowChangePw(false)} />}
     </div>
   )

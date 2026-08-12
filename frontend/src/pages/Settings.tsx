@@ -178,51 +178,6 @@ function SnapshotRestoreRow({ snapshot, onRestored }: {
   )
 }
 
-// Bright, unmissable divider — used between AI provider cards, where
-// providers stack in one long list and need to visibly separate at a glance.
-function ProviderDivider({ label }: { label?: string }) {
-  return (
-    <div className="flex items-center gap-3 my-5">
-      <div className="h-[3px] flex-1 rounded-full bg-gradient-to-r from-cyan-400 via-fuchsia-400 to-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.6)]" />
-      {label && <span className="text-[11px] font-semibold uppercase tracking-wider text-cyan-300 whitespace-nowrap">{label}</span>}
-      <div className="h-[3px] flex-1 rounded-full bg-gradient-to-r from-cyan-400 via-fuchsia-400 to-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.6)]" />
-    </div>
-  )
-}
-
-function MiniField({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <label className="block text-xs font-medium text-white/80 mb-1">{label}</label>
-      {hint && <p className="text-[11px] text-white/50 mb-1">{hint}</p>}
-      {children}
-    </div>
-  )
-}
-
-function ProviderCard({ title, subtitle, enabled, onToggle, onRemove, children }: {
-  title: string; subtitle?: string; enabled: boolean; onToggle: (v: boolean) => void
-  onRemove?: () => void; children?: React.ReactNode
-}) {
-  return (
-    <div className="rounded-lg border border-gray-800 bg-gray-950/40 px-4 py-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-white">{title}</p>
-          {subtitle && <p className="text-xs text-white/50 mt-0.5">{subtitle}</p>}
-        </div>
-        <div className="flex items-center gap-4 shrink-0">
-          <Toggle value={enabled} onChange={onToggle} />
-          {onRemove && (
-            <button type="button" onClick={onRemove} className="text-xs text-red-400 hover:text-red-300">Remove</button>
-          )}
-        </div>
-      </div>
-      {enabled && children && <div className="mt-3 space-y-3">{children}</div>}
-    </div>
-  )
-}
-
 function RestartServiceRow() {
   const [state, setState] = useState<'idle' | 'restarting' | 'done' | 'error'>('idle')
 
@@ -1468,7 +1423,6 @@ const OSS_NOTICES: Array<{ name: string; license: string }> = [
   { name: 'cryptography',       license: 'Apache-2.0 / BSD-3-Clause' },
   { name: 'PyYAML',             license: 'MIT' },
   { name: 'python-dotenv',      license: 'BSD-3-Clause' },
-  { name: 'Anthropic SDK',      license: 'MIT' },
   { name: 'React',              license: 'MIT' },
   { name: 'React DOM',          license: 'MIT' },
   { name: 'React Router',       license: 'MIT' },
@@ -1484,12 +1438,11 @@ const OSS_NOTICES: Array<{ name: string; license: string }> = [
 // Suite Integration is inbound-only here (the Suite Token pktHub uses to
 // proxy into this app) — pktCert has no outbound sibling-app integration,
 // unlike apps that pull data from other pkt* apps.
-type SecurityTabId = 'users' | 'auth' | 'suite' | 'ai' | 'ssl'
+type SecurityTabId = 'users' | 'auth' | 'suite' | 'ssl'
 const SECURITY_TABS: Array<{ id: SecurityTabId; label: string; adminOnly?: boolean }> = [
   { id: 'users', label: 'Users', adminOnly: true },
   { id: 'auth',  label: 'Auth' },
   { id: 'suite', label: 'Suite Integration' },
-  { id: 'ai',    label: 'AI Assistant' },
   { id: 'ssl',   label: 'SSL / TLS' },
 ]
 
@@ -1537,20 +1490,6 @@ export default function Settings() {
   const num  = (k: string, fallback = 0)  => (settings[k] as number) ?? fallback
   const bool = (k: string, fallback = false) => (settings[k] as boolean) ?? fallback
 
-  // AI Assistant — dynamic list of local/self-hosted OpenAI-compatible providers
-  type LocalProvider = { id: string; name: string; base_url: string; model: string; api_key: string; enabled: boolean }
-  const localProviders: LocalProvider[] = Array.isArray(settings['ai_local_providers'])
-    ? settings['ai_local_providers'] as LocalProvider[] : []
-  const updateLocalProvider = (idx: number, patch: Partial<LocalProvider>) => {
-    set('ai_local_providers', localProviders.map((p, i) => i === idx ? { ...p, ...patch } : p))
-  }
-  const addLocalProvider = () => {
-    const id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `local-${Date.now()}`
-    set('ai_local_providers', [...localProviders, { id, name: '', base_url: '', model: '', api_key: '', enabled: false }])
-  }
-  const removeLocalProvider = (idx: number) => {
-    set('ai_local_providers', localProviders.filter((_, i) => i !== idx))
-  }
 
   // Don't show the "remotely managed" lockout when pktHub itself is the one
   // viewing this page (via the proxy embed) — only for a real direct visit.
@@ -1602,12 +1541,6 @@ export default function Settings() {
     'discovery_default_schedule_minutes', 'discovery_default_ports',
     'discovery_ct_auto_enabled', 'discovery_ct_watched_domains',
     'discovery_expiry_warning_days',
-  ], settings, load)
-  const aiAssistantSave = useSave([
-    'ai_provider_ollama_enabled', 'ai_provider_ollama_base_url', 'ai_provider_ollama_model',
-    'ai_local_providers',
-    'ai_provider_anthropic_enabled', 'anthropic_api_key', 'ai_model',
-    'ai_provider_openai_enabled', 'openai_api_key', 'openai_model',
   ], settings, load)
   const notifySave = useSave([
     'notify_slack_enabled', 'notify_slack_webhook_url', 'notify_slack_channel',
@@ -1898,97 +1831,6 @@ export default function Settings() {
                   <SiblingIntegrations />
                 </div>
               </div>
-            )}
-
-            {securityTab === 'ai' && (
-              <Section title="AI Assistant" onSave={aiAssistantSave.save} saving={aiAssistantSave.saving} saved={aiAssistantSave.saved} error={aiAssistantSave.error}
-                help={{
-                  title: 'AI Assistant — How It Works',
-                  content: <>
-                    <p>Providers are tried top to bottom — <span className="text-gray-300 font-medium">local / self-hosted providers first</span>, since they keep your certificate data on hardware you control, then cloud providers as a fallback. Turn on as many as you like; the first enabled provider with valid config answers each question in the chat panel.</p>
-                    <p className="mt-2"><span className="text-gray-300 font-medium">Ollama</span> and other local endpoints run entirely on your own hardware — nothing is sent off-network. <span className="text-gray-300 font-medium">Anthropic</span> and <span className="text-gray-300 font-medium">OpenAI</span> are paid, cloud-hosted options and each need their own key.</p>
-                  </>,
-                }}
-              >
-                <div className="pt-2 pb-1">
-                  <p className="text-xs font-semibold text-cyan-300 uppercase tracking-wider">Local / Self-Hosted (Private)</p>
-                </div>
-
-                <ProviderCard title="Ollama" subtitle="Local models via a running Ollama server"
-                  enabled={bool('ai_provider_ollama_enabled')}
-                  onToggle={v => set('ai_provider_ollama_enabled', v)}
-                >
-                  <MiniField label="Base URL">
-                    <TextInput value={str('ai_provider_ollama_base_url', 'http://localhost:11434')} onChange={v => set('ai_provider_ollama_base_url', v)} placeholder="http://localhost:11434" mono />
-                  </MiniField>
-                  <MiniField label="Model" hint="Must already be pulled on the Ollama server (ollama pull <model>)">
-                    <TextInput value={str('ai_provider_ollama_model', 'llama3.1')} onChange={v => set('ai_provider_ollama_model', v)} placeholder="llama3.1" mono />
-                  </MiniField>
-                </ProviderCard>
-
-                {localProviders.map((p, idx) => (
-                  <Fragment key={p.id}>
-                    <ProviderDivider />
-                    <ProviderCard title={p.name || 'Local provider'} subtitle="OpenAI-compatible endpoint — LM Studio, LocalAI, vLLM, openclaw, etc."
-                      enabled={Boolean(p.enabled)}
-                      onToggle={v => updateLocalProvider(idx, { enabled: v })}
-                      onRemove={() => removeLocalProvider(idx)}
-                    >
-                      <MiniField label="Name">
-                        <TextInput value={p.name || ''} onChange={v => updateLocalProvider(idx, { name: v })} placeholder="e.g. Office GPU box" />
-                      </MiniField>
-                      <MiniField label="Base URL">
-                        <TextInput value={p.base_url || ''} onChange={v => updateLocalProvider(idx, { base_url: v })} placeholder="http://192.168.1.50:1234" mono />
-                      </MiniField>
-                      <MiniField label="Model">
-                        <TextInput value={p.model || ''} onChange={v => updateLocalProvider(idx, { model: v })} placeholder="model name as served" mono />
-                      </MiniField>
-                      <MiniField label="API key" hint="Optional — only if the endpoint requires one">
-                        <TextInput value={p.api_key || ''} onChange={v => updateLocalProvider(idx, { api_key: v })} placeholder="Leave blank if not required" secret mono />
-                      </MiniField>
-                    </ProviderCard>
-                  </Fragment>
-                ))}
-
-                <button type="button" onClick={addLocalProvider}
-                  className="mt-3 flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-white text-sm rounded-lg transition-colors">
-                  <span className="text-base leading-none">+</span> Add Local Provider
-                </button>
-
-                <ProviderDivider label="Cloud (Paid)" />
-
-                <ProviderCard title="Anthropic" subtitle="Claude via the Anthropic API"
-                  enabled={bool('ai_provider_anthropic_enabled', true)}
-                  onToggle={v => set('ai_provider_anthropic_enabled', v)}
-                >
-                  <MiniField label="API key" hint="Get a key at console.anthropic.com">
-                    <TextInput value={str('anthropic_api_key')} onChange={v => set('anthropic_api_key', v)} placeholder="sk-ant-…" secret mono />
-                  </MiniField>
-                  <MiniField label="Model" hint="Haiku is fast and cost-effective for certificate/CA questions">
-                    <SelectInput
-                      value={str('ai_model', 'claude-haiku-4-5-20251001')}
-                      onChange={v => set('ai_model', v)}
-                      options={[
-                        { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku (fast, low cost)' },
-                        { value: 'claude-sonnet-5', label: 'Claude Sonnet (balanced)' },
-                        { value: 'claude-opus-4-8', label: 'Claude Opus (most capable)' },
-                      ]}
-                    />
-                  </MiniField>
-                </ProviderCard>
-
-                <ProviderCard title="OpenAI" subtitle="GPT models via the OpenAI API"
-                  enabled={bool('ai_provider_openai_enabled')}
-                  onToggle={v => set('ai_provider_openai_enabled', v)}
-                >
-                  <MiniField label="API key" hint="Get a key at platform.openai.com">
-                    <TextInput value={str('openai_api_key')} onChange={v => set('openai_api_key', v)} placeholder="sk-…" secret mono />
-                  </MiniField>
-                  <MiniField label="Model">
-                    <TextInput value={str('openai_model', 'gpt-4o')} onChange={v => set('openai_model', v)} placeholder="gpt-4o" />
-                  </MiniField>
-                </ProviderCard>
-              </Section>
             )}
 
             {securityTab === 'ssl' && (

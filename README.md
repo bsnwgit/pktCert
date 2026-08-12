@@ -9,7 +9,7 @@ inventories TLS certificates across your network (active port scans and
 Certificate Transparency log search), tracks expiration, and doubles as an
 internal CA/PKI: generate or import root/intermediate CAs, define issuance
 templates, issue and revoke certificates, and serve CRLs. Surfaces it
-through a React UI with alerting and an in-app AI assistant. Every
+through a React UI with alerting. Every
 page/section has a "?" help button (same pattern across the whole pkt*
 suite) with a short in-context explainer — no separate user manual.
 
@@ -52,7 +52,6 @@ checkout needed):
 - [Configuration Reference](#configuration-reference)
 - [Running & Managing the Service](#running--managing-the-service)
 - [Roles & Auth](#roles--auth)
-- [AI Assistant](#ai-assistant)
 - [Alerting](#alerting)
 - [Suite Integration](#suite-integration)
 - [User Keys & IP Lookup](#user-keys--ip-lookup)
@@ -300,7 +299,6 @@ above the tab bar:
 
 | Section | Tabs |
 |---|---|
-| **Common** | General · Security (Users, Auth, Suite Integration, AI Assistant, SSL/TLS) · Data (Storage, Backups) · Notifications · User Keys · System |
 | **pktCert** | Cert Settings · Cert Keys · Templates · Discovery & Alerts |
 
 Common holds the settings identical across every pkt* app; pktCert holds
@@ -356,20 +354,6 @@ its own it doesn't stop a patient guessing loop. The counter is
 process-local (pktCert runs `workers=1`, so one process sees every
 attempt) and resets on restart — it's a speed bump against password
 spraying, not a substitute for an edge WAF or fail2ban.
-
-## AI Assistant
-
-A floating chat panel answers questions about your certificate inventory,
-scan results, and CA status. Configure a provider (local/Ollama,
-OpenAI-compatible endpoint, Anthropic, or OpenAI) under Settings → Security
-→ AI Assistant. Scope-locked to pktCert's own domain — see
-`app/api/ai.py` for the guard implementation.
-
-Each provider call is allowed up to **180 seconds** to respond. The
-ceiling is sized for a local model on modest hardware working through a
-complex, multi-part question — a shorter one turned those into spurious
-failures. Cloud providers rarely approach it. On overrun the panel says
-the provider didn't finish in time and suggests a shorter question.
 
 ## Alerting
 
