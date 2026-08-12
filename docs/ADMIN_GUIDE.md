@@ -49,7 +49,6 @@ output, and are not recoverable afterward (see
 
 Settings has a section bar above its tab bar with two buttons:
 
-- **Common** — General, Security (Users, Auth, Suite Integration, AI Assistant, SSL/TLS), Data (Storage, Backups), Notifications, User Keys, System. Identical across every pkt* app.
 - **pktCert** — Cert Settings, Cert Keys, Templates, Enrolment, Discovery & Alerts. This app's own.
 
 Only the selected section's tabs appear in the row below, so switch sections if a tab isn't where you expect it; they previously shared a single row split by a thin divider. Deep links to a specific tab select the right section automatically.
@@ -334,7 +333,6 @@ through the normal change-password flow once you're in.
 | Password rejected as too short | Minimum is 8 characters, on every path that sets a password |
 | A sibling-app connection's health check fails with a TLS error | That connection now verifies the target's certificate (default on). Fix the target's certificate, or clear **verify TLS** for just that connection |
 | Uploading an SSL PFX fails with "Could not parse PKCS#12 bundle" | Wrong passphrase or a corrupt/unsupported bundle. The bundle is now parsed in-process rather than shelled out to `openssl`, so the error is the parser's, not a missing binary |
-| AI Assistant says the provider "didn't finish responding within 180s" | The provider was reachable but too slow — typically a large local model on CPU-only hardware. Ask a shorter question, use a smaller model, or give the host more resources |
 
 ## Upgrading
 

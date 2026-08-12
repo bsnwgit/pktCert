@@ -317,9 +317,7 @@ export const api = {
   getIpInfo: (ip: string) => request<Record<string, unknown>>(`/ip-info/${encodeURIComponent(ip)}`),
   getInternalIpInfo: (ip: string) => request<Record<string, unknown>>(`/ip-info/internal/${encodeURIComponent(ip)}`),
 
-  // -- AI / Settings ---------------------------------------------------------------------
-  aiChat: (question: string, context: Record<string, unknown> = {}) =>
-    request<{ answer: string; provider?: string; tokens_used: number }>('/ai/chat', { method: 'POST', body: JSON.stringify({ question, context }) }),
+  // -- Settings --------------------------------------------------------------------------
 
   getSettings: () => request<Record<string, unknown>>('/settings'),
   updateSettings: (values: Record<string, unknown>) => request('/settings', { method: 'PUT', body: JSON.stringify({ values }) }),
