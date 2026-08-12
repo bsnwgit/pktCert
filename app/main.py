@@ -131,6 +131,11 @@ async def lifespan(app: FastAPI):
     retention = RetentionScheduler()
     await retention.start()
     app.state.retention = retention
+
+    from app.cert.ct_discovery import CTDiscovery
+    ct_discovery = CTDiscovery()
+    await ct_discovery.start()
+    app.state.ct_discovery = ct_discovery
     log.info("Alert engine started")
 
     from app.backup import BackupScheduler
@@ -158,6 +163,7 @@ async def lifespan(app: FastAPI):
     await scan_engine.stop()
     await alert_engine.stop()
     await retention.stop()
+    await ct_discovery.stop()
     await backup_scheduler.stop()
     _log_handler.stop()
     log.info("Shutdown complete")
