@@ -1,7 +1,8 @@
 import { ReactNode, useState, useEffect } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../store/auth'
-import { api } from '../api/client'
+import { api, getToken } from '../api/client'
+import ResonanceMount from '../resonance/ResonanceMount'
 import clsx from 'clsx'
 import { BrandLockup } from './Brand'
 
@@ -224,6 +225,9 @@ export default function Layout({ children, chromeless = false }: { children: Rea
         </main>
       </div>
       {showChangePw && <ChangePasswordModal onClose={() => setShowChangePw(false)} />}
+      {/* One mount for the whole authenticated app, so a route change does
+          not cost a new resonance session. */}
+      <ResonanceMount getToken={getToken} />
     </div>
   )
 }

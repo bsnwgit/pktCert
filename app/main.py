@@ -44,6 +44,8 @@ from app.api import (
     scep as scep_router,
     enrollment_profiles as enrollment_profiles_router,
 )
+from app.api import resonance as resonance_router
+from app.api import resonance_data as resonance_data_router
 
 settings = get_settings()
 log = logging.getLogger("pktcert")
@@ -209,6 +211,14 @@ app.include_router(mxtoolbox_router.router, prefix="/api/mxtoolbox",    tags=["m
 app.include_router(integrations_router.router, prefix="/api/integrations", tags=["integrations"])
 app.include_router(widgets_router.router,   prefix="/api/widgets",      tags=["widgets"])
 app.include_router(docs_router.router,      prefix="/api/docs-content", tags=["docs"])
+app.include_router(resonance_router.router, prefix="/api/resonance",    tags=["resonance"])
+# The assistant's data surface. Carries its own absolute paths — /api/resonance/data/*
+# plus the two documents at /api/resonance/openapi.json and /.well-known/resonance.json —
+# so it is mounted without a prefix, and before the SPA catch-all so the grant file wins
+# over it.
+app.include_router(resonance_data_router.router)
+resonance_data_router.register_error_handler(app)
+resonance_data_router.validate_grants(app)
 app.include_router(approvals_router.router, prefix="/api/approvals",   tags=["approvals"])
 app.include_router(enrollment_profiles_router.router, prefix="/api/enrollment-profiles", tags=["enrollment"])
 # Deliberately outside /api and unauthenticated — see app/api/crl.py's
@@ -240,7 +250,12 @@ if _frontend_dist.exists():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(request: Request, full_path: str):
-        if full_path.startswith("api/"):
+        # /api/ and /.well-known/ are answered by real routes or not at all.
+        # Falling through to index.html gave a 200 of HTML to anything asking
+        # for a well-known document — resonance reading
+        # /.well-known/resonance.json on an install that publishes none got a
+        # page instead of an honest 404.
+        if full_path.startswith("api/") or full_path.startswith(".well-known/"):
             raise HTTPException(status_code=404, detail="Not found")
         # Normalize-then-prefix-check (CodeQL's own documented pattern for
         # py/path-injection) rather than pathlib's resolve()/is_relative_to,
@@ -255,7 +270,16 @@ if _frontend_dist.exists():
         if static_file.exists() and static_file.is_file():
             return FileResponse(str(static_file))
         index = _frontend_dist / "index.html"
-        response = FileResponse(str(index))
+        # index.html names the hashed bundles, so a cached copy pins the browser
+        # to whatever build was current when it was cached — a deploy lands on
+        # the server and the person reloading sees no change, with nothing in
+        # the network log to explain it because the request never leaves the
+        # browser. Vite fingerprints everything under /assets, so only this one
+        # file must never be cached; the bundles it points at still can be.
+        response = FileResponse(
+            str(index),
+            headers={"Cache-Control": "no-store, must-revalidate", "Pragma": "no-cache"},
+        )
         # pktHub suite-token bootstrap — set sso cookies so React logs in automatically
         _cfg = settings
         _suite_tk = request.headers.get("x-suite-token", "")
