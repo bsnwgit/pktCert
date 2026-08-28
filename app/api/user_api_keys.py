@@ -28,7 +28,7 @@ from app.cert.crypto import decrypt_str, encrypt_str
 # Public, harmless IP used to exercise each IP-reputation provider's lookup
 # endpoint when testing a key — Google Public DNS, safe to query against
 # any provider.
-_TEST_IP = "8.8.8.8"
+_TEST_IP = "8.8.8.8"  # sanitize: allow-public-ip
 _TEST_DOMAIN = "example.com"
 
 log = logging.getLogger("pktcert.api.user_api_keys")
