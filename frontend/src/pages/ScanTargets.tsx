@@ -204,7 +204,7 @@ export default function ScanTargets() {
       </div>
 
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="f-tbl-cards w-full text-sm">
           <thead>
             <tr className="border-b border-gray-800">
               <th className="px-4 py-3 text-left text-xs font-medium text-white">Name</th>
@@ -220,12 +220,12 @@ export default function ScanTargets() {
             {loading && <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-white">Loading…</td></tr>}
             {!loading && paged.map(t => (
               <tr key={t.id} className="hover:bg-gray-800/30 transition-colors">
-                <td className="px-4 py-3 font-medium text-white">{t.name}</td>
-                <td className="px-4 py-3 text-white font-mono text-xs">{t.host || t.cidr}</td>
-                <td className="px-4 py-3 text-white text-xs">{t.ports}</td>
-                <td className="px-4 py-3 text-white text-xs">{t.schedule_minutes === 0 ? 'Manual only' : `Every ${t.schedule_minutes}m`}</td>
-                <td className="px-4 py-3 text-white text-xs">{t.last_scan_at ?? 'Never'}</td>
-                <td className="px-4 py-3">
+                <td data-label="Name" className="px-4 py-3 font-medium text-white">{t.name}</td>
+                <td data-label="Target" className="px-4 py-3 text-white font-mono text-xs">{t.host || t.cidr}</td>
+                <td data-label="Ports" className="px-4 py-3 text-white text-xs">{t.ports}</td>
+                <td data-label="Schedule" className="px-4 py-3 text-white text-xs">{t.schedule_minutes === 0 ? 'Manual only' : `Every ${t.schedule_minutes}m`}</td>
+                <td data-label="Last Scan" className="px-4 py-3 text-white text-xs">{t.last_scan_at ?? 'Never'}</td>
+                <td data-label="Status" className="px-4 py-3">
                   <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${STATUS_STYLES[t.last_status]}`}>{t.last_status}</span>
                   {t.last_error && <p className="text-xs text-red-400 mt-0.5">{t.last_error}</p>}
                 </td>

@@ -239,3 +239,127 @@
 @media print {
   body::before, body::after { display: none !important; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PHONE LAYER — below the md breakpoint (768px)
+
+   The suite is built for a desk. These rules let it survive a phone without
+   the desktop rendering moving by a pixel: every rule here is either inside a
+   max-width query or hangs off an f- class no desktop-only view carries.
+
+   Read-only is the assumption. Nothing here is for entering data on a phone —
+   it is for finding a number and being able to believe it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── The zoom trap ───────────────────────────────────────────────────────
+   iOS Safari magnifies the viewport whenever a focused control's text is
+   under 16px, and does not restore it afterwards — one tap on a search box
+   and the app is stuck zoomed until you pinch out by hand. The controls block
+   above sets 12px, so this fires on every field in the suite, login included.
+   16px is not a design preference here; it is the threshold Safari checks. */
+@media (max-width: 767px) {
+  input[type="text"], input[type="password"], input[type="email"],
+  input[type="number"], input[type="search"], input[type="url"],
+  input[type="date"], input[type="datetime-local"], input[type="time"],
+  select, textarea {
+    font-size: 16px;
+  }
+}
+
+/* ── Tap targets ─────────────────────────────────────────────────────────
+   Sidebar icon buttons are 16px SVGs sitting next to each other, which on a
+   touchscreen is a coin flip on which one you hit. This lifts the hit area to
+   the 44px floor on phones only, so the icon itself stays as drawn. */
+@media (max-width: 767px) {
+  .f-tap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* ── Safe area ───────────────────────────────────────────────────────────
+   The home indicator overlaps the bottom ~34px of the viewport, which is
+   exactly where the drawer puts sign-out. */
+.f-safe-b { padding-bottom: env(safe-area-inset-bottom); }
+
+/* ── Drawer field ────────────────────────────────────────────────────────
+   Off-canvas the sidebar floats over the page, so its near-transparent desk
+   background would let content read through it. Restated opaque here, with
+   the gold wash kept on top. !important because the gradient it replaces is
+   an inline style on the element; the query keeps this off the desk entirely. */
+@media (max-width: 767px) {
+  .f-drawer {
+    background: linear-gradient(180deg, rgba(216, 180, 110, 0.025), transparent 40%),
+                var(--f-void) !important;
+  }
+}
+
+/* ── Tables: card collapse ───────────────────────────────────────────────
+   For tables you read rather than scan — few rows, each one dense. Below md
+   the header row is dropped and every row becomes a stacked card, each cell
+   labelled from its own data-label. Labels take the .f-lbl treatment so a
+   collapsed table still reads as part of the instrument.
+
+   Cells with no data-label — row actions, checkboxes — stack without a label
+   rather than leaving an empty gutter. The border is !important because
+   divide-y outranks it on specificity and would otherwise halve the card. */
+@media (max-width: 767px) {
+  .f-tbl-cards thead { display: none; }
+  .f-tbl-cards tbody { display: block; }
+
+  .f-tbl-cards tbody tr {
+    display: block;
+    border: 1px solid var(--f-line-soft) !important;
+    margin-bottom: 8px;
+    padding: 4px 0;
+  }
+
+  .f-tbl-cards tbody td {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 6px 12px !important;
+    font-size: 12px;
+    text-align: right;
+  }
+
+  .f-tbl-cards tbody td[data-label]::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    text-align: left;
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: var(--f-ink-3);
+  }
+}
+
+/* ── Tables: held first column ───────────────────────────────────────────
+   For tables you scan rather than read — many rows, looking for one. Cards
+   would turn a 200-row certificate list into an endless page, so the table
+   keeps its shape and scrolls inside its own panel rather than dragging the
+   whole layout sideways with it. The first column is held so a row stays
+   identifiable once you have scrolled off it. */
+.f-tbl-scroll { overflow-x: auto; }
+
+@media (max-width: 767px) {
+  .f-tbl-scroll table { min-width: max-content; }
+
+  .f-tbl-scroll thead th:first-child,
+  .f-tbl-scroll tbody td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--f-void);
+  }
+
+  /* 9px instrument headers are the desk setting; the column you are scanning
+     against needs slightly more than that on a phone. */
+  .f-tbl-scroll thead th { font-size: 10px !important; }
+}
