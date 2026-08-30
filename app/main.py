@@ -3,15 +3,17 @@ pktCert — FastAPI application entry point.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os.path
 import secrets
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
@@ -192,6 +194,115 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def _decode_setting(raw):
+    """
+    Read one settings-table value. They are JSON-encoded, but rows written
+    before that convention settled are bare strings — decode tolerantly, the
+    same way app/config.py reads suite_token.
+    """
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+
+
+# Paths that answer even while pktHub has this app locked. /api/suite/ is the
+# one that must never be removed: it is the channel pktHub unlocks through, and
+# without it a lock could only be lifted by editing the database by hand.
+# /scep matters as much here as it does nowhere else in the suite — devices
+# enrolling over RFC 8894 are not browsers, and redirecting them at a web UI
+# would break certificate enrolment rather than inconvenience a user.
+_LOCK_ALLOW_PREFIXES = (
+    "/api/health", "/api/suite/", "/api/auth/", "/api/resonance/",
+    "/api/widgets/", "/scep", "/.well-known/", "/assets/",
+)
+
+# How long a lock outlives pktHub's last contact. pktHub polls health well
+# inside this, so the only way to reach the expiry is for the hub to actually
+# stop — at which point the lock releases rather than stranding this app behind
+# a redirect to an address that no longer answers.
+_LOCK_HEARTBEAT_MAX_AGE = 300  # seconds
+
+
+@app.middleware("http")
+async def _direct_access_lock(request: Request, call_next):
+    """Send users to pktHub while it has this app in Managed mode.
+
+    Failure here is deliberately silent: any error reading the lock falls
+    through to serving the request. A bug in this middleware must not be able
+    to take the app off the network, and the lock is a convenience for hub
+    operators rather than a security boundary — every route keeps its own auth.
+    """
+    import aiosqlite
+
+    path = request.url.path
+    if any(path == p or path.startswith(p) for p in _LOCK_ALLOW_PREFIXES):
+        return await call_next(request)
+
+    redirect_to = ""
+    try:
+        cfg = get_settings()
+        # Every database touch finishes inside this block. Handing the request on
+        # from within it would keep one connection open for the whole downstream
+        # call, i.e. one per request in flight.
+        async with aiosqlite.connect(cfg.db_path) as db:
+            presented = request.headers.get("x-suite-token", "")
+            stored    = (cfg.suite_token or "").strip()
+            if presented and stored and secrets.compare_digest(presented, stored):
+                # pktHub itself, or a user it is proxying — never redirected, and
+                # its arrival is what keeps the lock alive.
+                await db.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES ('lock_heartbeat_at', ?)",
+                    (json.dumps(datetime.now(timezone.utc).isoformat()),)
+                )
+                await db.commit()
+            else:
+                async with db.execute("SELECT value FROM settings WHERE key='direct_ui_locked'") as cur:
+                    row = await cur.fetchone()
+                # "is True", not bool(): a value that failed to decode comes back
+                # as the raw text, and bool("false") is True.
+                if row and _decode_setting(row[0]) is True:
+                    async with db.execute("SELECT value FROM settings WHERE key='lock_heartbeat_at'") as cur:
+                        hrow = await cur.fetchone()
+                    beat = _decode_setting(hrow[0]) if hrow else None
+                    # No heartbeat at all counts as expired — a lock we cannot
+                    # date is a lock we cannot trust to still be wanted.
+                    expired = True
+                    if beat:
+                        try:
+                            last = datetime.fromisoformat(str(beat))
+                            if last.tzinfo is None:
+                                last = last.replace(tzinfo=timezone.utc)
+                            expired = (datetime.now(timezone.utc) - last).total_seconds() > _LOCK_HEARTBEAT_MAX_AGE
+                        except ValueError:
+                            pass
+
+                    if expired:
+                        logging.getLogger("pktcert.main").warning(
+                            "pktHub has not called in %ss — releasing the direct-access lock",
+                            _LOCK_HEARTBEAT_MAX_AGE,
+                        )
+                        await db.execute(
+                            "INSERT OR REPLACE INTO settings (key, value) VALUES ('direct_ui_locked', ?)",
+                            (json.dumps(False),)
+                        )
+                        await db.commit()
+                    else:
+                        async with db.execute("SELECT value FROM settings WHERE key='hub_redirect_url'") as cur:
+                            rrow = await cur.fetchone()
+                        # No target means nowhere to send anyone — serve the app
+                        # rather than bouncing users to a blank address.
+                        redirect_to = str(_decode_setting(rrow[0]) or "") if rrow else ""
+    except Exception:
+        logging.getLogger("pktcert.main").exception("direct-access lock check failed")
+
+    if redirect_to:
+        return RedirectResponse(url=redirect_to, status_code=302)
+    return await call_next(request)
+
 # -- API Routers -----------------------------------------------------------------
 
 app.include_router(auth.router,             prefix="/api/auth",         tags=["auth"])
@@ -242,8 +353,41 @@ app.include_router(scep_router.router,      prefix="/scep",             tags=["s
 # -- Health check ------------------------------------------------------------------
 
 @app.get("/api/health", tags=["system"])
-async def health():
-    return {"status": "ok", "version": "0.1.0"}
+async def health(request: Request):
+    """
+    Also reports Managed-mode state. pktHub reads direct_ui_locked on every poll
+    and flips its own record back to Direct when this app says it is unlocked,
+    so the hub cannot go on showing a lock that the failsafe has released.
+
+    The poll doubles as the lock's heartbeat — this request is the evidence that
+    pktHub is still alive, which is why it answers even while locked.
+
+    hub_redirect_url is deliberately not reported here. pktHub reads it from the
+    token-authenticated /api/suite/direct-access, and this endpoint is public —
+    an unlocked app has no reason to publish the hub's address to every caller.
+    """
+    import aiosqlite
+
+    locked = False
+    try:
+        cfg = get_settings()
+        async with aiosqlite.connect(cfg.db_path) as db:
+            async with db.execute("SELECT value FROM settings WHERE key='direct_ui_locked'") as cur:
+                row = await cur.fetchone()
+            locked = (_decode_setting(row[0]) is True) if row else False
+
+            presented = request.headers.get("x-suite-token", "")
+            stored    = (cfg.suite_token or "").strip()
+            if presented and stored and secrets.compare_digest(presented, stored):
+                await db.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES ('lock_heartbeat_at', ?)",
+                    (json.dumps(datetime.now(timezone.utc).isoformat()),)
+                )
+                await db.commit()
+    except Exception:
+        logging.getLogger("pktcert.main").exception("health lock state read failed")
+
+    return {"status": "ok", "version": "0.1.0", "direct_ui_locked": locked}
 
 # -- Serve React frontend (production build) ---------------------------------------
 _frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
