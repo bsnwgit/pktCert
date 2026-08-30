@@ -217,7 +217,7 @@ export default function Enrollment() {
 
       {profiles.length > 0 && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-          <table className="w-full text-sm">
+          <table className="f-tbl-cards w-full text-sm">
             <thead className="bg-gray-800/50">
               <tr className="text-left text-xs text-white">
                 <th className="px-4 py-3">Profile</th>
@@ -230,7 +230,7 @@ export default function Enrollment() {
             <tbody className="divide-y divide-gray-800">
               {profiles.map(p => (
                 <tr key={p.id}>
-                  <td className="px-4 py-3">
+                  <td data-label="Profile" className="px-4 py-3">
                     <div className="text-white">{p.name}</div>
                     <div className="text-xs text-white/70">
                       {p.protocol.toUpperCase()}
@@ -238,15 +238,15 @@ export default function Enrollment() {
                       {!p.enabled && <span className="text-amber-300"> · disabled</span>}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-xs text-white">
+                  <td data-label="Issues" className="px-4 py-3 text-xs text-white">
                     {caName(p.ca_id)}<br /><span className="text-white/70">{templateName(p.template_id)}</span>
                   </td>
-                  <td className="px-4 py-3 text-xs text-white">
+                  <td data-label="Restricted to" className="px-4 py-3 text-xs text-white">
                     {p.allowed_name_suffix || <span className="text-amber-300">any name</span>}
                     {p.max_certs !== null && <div className="text-white/70">{p.issued_count}/{p.max_certs} issued</div>}
                     {p.max_certs === null && <div className="text-white/70">{p.issued_count} issued</div>}
                   </td>
-                  <td className="px-4 py-3 text-xs text-white">{fmtDate(p.last_used_at)}</td>
+                  <td data-label="Used" className="px-4 py-3 text-xs text-white">{fmtDate(p.last_used_at)}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3 justify-end">
                       <button onClick={() => rotate(p)} className="text-xs text-sky-400 hover:text-sky-300">Rotate secret</button>
@@ -266,7 +266,7 @@ export default function Enrollment() {
       {log.length > 0 && (
         <div>
           <h3 className="text-sm font-medium text-white mb-2">Recent enrolment attempts</h3>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <div className="f-tbl-scroll bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
             <table className="w-full text-xs">
               <tbody className="divide-y divide-gray-800">
                 {log.map(e => (
