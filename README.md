@@ -699,7 +699,7 @@ runs on a single host.
 | **[pktWiFi](https://github.com/bsnwgit/pktwifi)** | `8769` | Access point, RF and client visibility from Meraki and UniFi controllers or plain SNMP polling |
 | **[pktIPAM](https://github.com/bsnwgit/pktipam)** | `8761` | IP address management reconciling declared subnets against live DHCP, DNS and device data, flagging conflicts |
 | **[pktNode](https://github.com/bsnwgit/pktnode)** | `8764` | Endpoint monitoring and management for Mac, Windows and Linux via a lightweight Go agent |
-| **[pktSecurity](https://github.com/bsnwgit/pktsecurity)** | `8762` | Security operations across the estate — CVE exposure, threat intelligence, ATT&CK-mapped detections and case management |
+| **[pktSecurity](https://pktsolution.com/pktSecurity/index.html)** | `8762` | Security operations across the estate — CVE exposure, threat intelligence, ATT&CK-mapped detections and case management |
 | **pktCert** *(you are here)* | `8763` | TLS certificate discovery and expiry tracking, plus an internal CA — issue, revoke and serve CRLs |
 | **[pktHub](https://github.com/bsnwgit/pkthub)** | `8760` | The front door — one sign-in, one alert stream, NOC wallboards and user management across every registered app |
 
