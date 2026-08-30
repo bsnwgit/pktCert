@@ -191,7 +191,7 @@ export default function Templates() {
       {error && <p className="text-sm text-red-400">{error}</p>}
 
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="f-tbl-cards w-full text-sm">
           <thead>
             <tr className="border-b border-gray-800">
               <th className="px-4 py-3 text-left text-xs font-medium text-white">Name</th>
@@ -206,11 +206,11 @@ export default function Templates() {
             {loading && <tr><td colSpan={isAdmin ? 6 : 5} className="px-4 py-8 text-center text-sm text-white">Loading…</td></tr>}
             {!loading && templates.map(t => (
               <tr key={t.id} className="hover:bg-gray-800/30 transition-colors">
-                <td className="px-4 py-3 font-medium text-white">{t.name}</td>
-                <td className="px-4 py-3 text-white text-xs">{t.key_algorithm.toUpperCase()} {t.key_size}</td>
-                <td className="px-4 py-3 text-white">{formatValidity(t.validity_days)}</td>
-                <td className="px-4 py-3 text-white text-xs">{t.extended_key_usage.join(', ')}</td>
-                <td className="px-4 py-3 text-white text-xs">{caName(t.default_ca_id)}</td>
+                <td data-label="Name" className="px-4 py-3 font-medium text-white">{t.name}</td>
+                <td data-label="Key" className="px-4 py-3 text-white text-xs">{t.key_algorithm.toUpperCase()} {t.key_size}</td>
+                <td data-label="Validity" className="px-4 py-3 text-white">{formatValidity(t.validity_days)}</td>
+                <td data-label="EKU" className="px-4 py-3 text-white text-xs">{t.extended_key_usage.join(', ')}</td>
+                <td data-label="Default CA" className="px-4 py-3 text-white text-xs">{caName(t.default_ca_id)}</td>
                 {isAdmin && (
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
