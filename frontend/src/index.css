@@ -391,3 +391,21 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ── Page headers ────────────────────────────────────────────────────────
+   A page header is a justify-between row holding a title on one side and its
+   controls on the other. At 390px the two sides cannot share a line — a title,
+   a select and an export button need roughly twice the width available — and
+   because the row does not wrap, the controls run off the right edge rather
+   than moving down.
+
+   Scoped with :has(h1) so only page headers are affected: a justify-between
+   row inside a card or a table cell is left exactly as it was. The gap only
+   applies once wrapping is in play, so it cannot add space to a row that was
+   already fitting. */
+@media (max-width: 639px) {
+  .flex.justify-between:has(h1) {
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+}
