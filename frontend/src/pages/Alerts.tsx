@@ -667,7 +667,7 @@ export default function Alerts() {
               {rulesFilter && <button onClick={() => setRulesFilter('')} className="text-xs text-white hover:text-white">✕</button>}
               <span className="text-xs text-white ml-auto">{filteredRules.length} rule{filteredRules.length !== 1 ? 's' : ''}</span>
             </div>
-            <table className="w-full text-sm">
+            <table className="f-tbl-cards w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-800">
                   <th className="px-4 py-3 text-left text-xs font-medium text-white">Enabled</th>
@@ -682,22 +682,22 @@ export default function Alerts() {
               <tbody className="divide-y divide-gray-800/50">
                 {filteredRules.map(rule => (
                   <tr key={rule.id} className="hover:bg-gray-800/30 transition-colors">
-                    <td className="px-4 py-3">
+                    <td data-label="Enabled" className="px-4 py-3">
                       <button onClick={() => handleToggleRule(rule)} disabled={!isAdmin}
                         className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 ${rule.enabled ? 'bg-sky-600' : 'bg-gray-700'}`}>
                         <span className={`inline-block h-3 w-3 rounded-full bg-white transition-transform ${rule.enabled ? 'translate-x-5' : 'translate-x-1'}`} />
                       </button>
                     </td>
-                    <td className="px-4 py-3 font-medium text-white">{rule.name}</td>
-                    <td className="px-4 py-3 text-white text-xs">
+                    <td data-label="Rule" className="px-4 py-3 font-medium text-white">{rule.name}</td>
+                    <td data-label="Condition" className="px-4 py-3 text-white text-xs">
                       {conditions.find(c => c.key === rule.condition_type)?.label
                         ?? CONDITION_LABEL[rule.condition_type] ?? rule.condition_type}
                     </td>
-                    <td className="px-4 py-3 text-white">{rule.threshold ?? '—'}</td>
-                    <td className="px-4 py-3">
+                    <td data-label="Threshold" className="px-4 py-3 text-white">{rule.threshold ?? '—'}</td>
+                    <td data-label="Severity" className="px-4 py-3">
                       <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${SEV_STYLES[rule.severity] ?? SEV_STYLES.info}`}>{rule.severity}</span>
                     </td>
-                    <td className="px-4 py-3 text-xs text-white">{rule.channels.join(', ')}</td>
+                    <td data-label="Channels" className="px-4 py-3 text-xs text-white">{rule.channels.join(', ')}</td>
                     {isAdmin && (
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
