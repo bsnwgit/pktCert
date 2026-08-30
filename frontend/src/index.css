@@ -363,3 +363,31 @@
      against needs slightly more than that on a phone. */
   .f-tbl-scroll thead th { font-size: 10px !important; }
 }
+
+/* ── Grids ───────────────────────────────────────────────────────────────
+   Tailwind's grid-cols-N is repeat(N, minmax(0, 1fr)), and the 0 minimum is
+   the problem: columns shrink past their content rather than pushing the row
+   wider, so a four-up stat row on a 390px screen overlaps its own numbers
+   instead of overflowing visibly.
+
+   Below sm: three or more columns drop to two, and two drops to one. The two
+   thresholds are separate on purpose — a four-up row of stat tiles reads fine
+   at two across, while two charts side by side at ~180px each read as nothing
+   at all. A layout that already declares its own breakpoint is untouched,
+   since sm:grid-cols-* and up live in min-width queries this never meets.
+
+   .f-grid-keep opts a grid out, for the rare row that genuinely wants to stay
+   side by side on a phone. */
+@media (max-width: 639px) {
+  .grid-cols-3:not(.f-grid-keep),  .grid-cols-4:not(.f-grid-keep),
+  .grid-cols-5:not(.f-grid-keep),  .grid-cols-6:not(.f-grid-keep),
+  .grid-cols-7:not(.f-grid-keep),  .grid-cols-8:not(.f-grid-keep),
+  .grid-cols-9:not(.f-grid-keep),  .grid-cols-10:not(.f-grid-keep),
+  .grid-cols-11:not(.f-grid-keep), .grid-cols-12:not(.f-grid-keep) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .grid-cols-2:not(.f-grid-keep) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
