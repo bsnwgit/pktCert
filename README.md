@@ -708,3 +708,7 @@ and puts them behind a single login with shared alerting and NOC wallboards — 
 every app is fully usable without it.
 
 More at **[pktsolution.com](https://pktsolution.com)**.
+
+## License
+
+This project is distributed under the PolyForm Noncommercial License 1.0.0 — see [`LICENSE`](LICENSE).
