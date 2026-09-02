@@ -70,6 +70,3 @@ htmlcov/
 # --- Misc ---------------------------------------------------------------------
 *.bak
 *.orig
-
-# Claude project notes (local only)
-CLAUDE.md
