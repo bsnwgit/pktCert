@@ -4,6 +4,17 @@
   <img src="lockup-256h.png" alt="pktCert" height="64">
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/dashboard.webp" alt="pktCert — Dashboard" width="900">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/certificates.webp" alt="pktCert — Certificates" width="430">
+  <img src="docs/screenshots/certificate-authorities.webp" alt="pktCert — Internal CA" width="430">
+</p>
+
+<p align="center"><sub>Dashboard &middot; Certificates &middot; Internal CA</sub></p>
+
 Enterprise certificate management — part of the [pkt suite](#the-pkt-suite). Discovers and
 inventories TLS certificates across your network (active port scans and
 Certificate Transparency log search), tracks expiration, and doubles as an
