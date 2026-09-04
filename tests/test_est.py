@@ -44,7 +44,7 @@ import sqlite3                                                    # noqa: E402
 import aiosqlite                                                  # noqa: E402
 from cryptography import x509                                     # noqa: E402
 from cryptography.hazmat.primitives import hashes, serialization   # noqa: E402
-from cryptography.hazmat.primitives.asymmetric import ec           # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import ec, rsa      # noqa: E402
 from cryptography.hazmat.primitives.serialization import pkcs7     # noqa: E402
 from cryptography.x509.oid import NameOID                          # noqa: E402
 from fastapi.testclient import TestClient                          # noqa: E402
@@ -80,6 +80,16 @@ def device_csr(common_name: str, sans: list[str] | None = None) -> bytes:
             x509.SubjectAlternativeName([x509.DNSName(s) for s in sans]), critical=False
         )
     return builder.sign(key, hashes.SHA256()).public_bytes(serialization.Encoding.DER)
+
+
+def csr_with_key(common_name: str, key) -> bytes:
+    """A CSR built on a caller-supplied key, for exercising key-strength policy."""
+    return (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)]))
+        .sign(key, hashes.SHA256())
+        .public_bytes(serialization.Encoding.DER)
+    )
 
 
 def b64(der: bytes) -> str:
@@ -225,6 +235,35 @@ async def main() -> int:
     r = client.post("/.well-known/est/simpleenroll", headers=basic("switches", new_secret),
                     content=b64(device_csr("sw4.corp.example.com")))
     check("a disabled profile cannot enrol", r.status_code == 401, f"HTTP {r.status_code}")
+
+    # A suffix written without a leading dot is the natural way to scope a
+    # profile to a domain, and used to be matched with a plain endswith — which
+    # admits 'notexample.com' under 'example.com', a different domain that
+    # merely shares the tail. Named last so it cannot disturb the profile
+    # ordering the checks above rely on.
+    print("\n── name boundaries and key strength ──")
+    r = client.post("/api/enrollment-profiles", json={
+        "name": "Zone apex", "protocol": "est", "ca_id": inter["id"], "template_id": tpl_id,
+        "username": "apex", "allowed_name_suffix": "example.com", "max_certs": 50,
+    })
+    check("a profile can be scoped to a bare domain", r.status_code == 201, r.text[:200])
+    apex = r.json()["secret"]
+
+    for name, allowed in [("www.example.com", True), ("example.com", True),
+                          ("notexample.com", False), ("evil-example.com", False),
+                          ("xexample.com", False)]:
+        rr = client.post("/.well-known/est/simpleenroll", headers=basic("apex", apex),
+                         content=b64(device_csr(name)))
+        check(f"'{name}' is {'admitted' if allowed else 'refused'} under 'example.com'",
+              (rr.status_code == 200) == allowed, f"HTTP {rr.status_code}: {rr.text[:120]}")
+
+    rr = client.post("/.well-known/est/simpleenroll", headers=basic("apex", apex),
+                     content=b64(csr_with_key(
+                         "weak.example.com",
+                         rsa.generate_private_key(public_exponent=65537, key_size=1024))))
+    check("a 1024-bit RSA key is refused however valid the name",
+          rr.status_code == 403, f"HTTP {rr.status_code}: {rr.text[:120]}")
+    check("and says why", "1024" in rr.text, rr.text[:200])
 
     print()
     if FAILURES:
