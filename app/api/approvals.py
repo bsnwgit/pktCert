@@ -202,6 +202,19 @@ async def approve_request(
             cert = await cur.fetchone()
         if not cert:
             raise HTTPException(404, "The certificate for this request no longer exists")
+
+        # A publicly-issued certificate has to be revoked at the CA that issued
+        # it. Updating the row and publishing pktCert's own CRL changes nothing
+        # for anyone relying on it — no client checks this CRL for a
+        # Let's Encrypt certificate. Deferred import: public_certs imports this
+        # module for the same approval check.
+        if cert["source"] == "public":
+            from app.api import public_certs
+
+            await public_certs.revoke_at_ca(
+                db, cert, public_certs.REASON_CODE_NUMBERS.get(row["reason_code"] or "unspecified", 0)
+            )
+
         await db.execute(
             """UPDATE certificates SET status = 'revoked', revoked_at = datetime('now'),
                revoked_reason = ?, revoked_reason_code = ? WHERE id = ?""",

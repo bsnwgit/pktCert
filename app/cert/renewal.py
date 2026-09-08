@@ -112,6 +112,54 @@ async def renew_one(db: aiosqlite.Connection, old) -> Optional[int]:
         return None
 
 
+async def _due_public(db: aiosqlite.Connection) -> list[aiosqlite.Row]:
+    """Managed public certificates inside their renewal window.
+
+    Separate from _due_for_renewal because these are issued by a CA outside
+    pktCert: there is no ca_id and no template to join, and the window is per
+    request rather than per certificate. What they share is that pktCert holds
+    the private key, which is the only reason it can renew either of them.
+    """
+    async with db.execute(
+        """SELECT r.* FROM public_cert_requests r
+             LEFT JOIN certificates c ON c.id = r.certificate_id
+            WHERE r.enabled = 1 AND r.auto_renew = 1
+              AND (c.id IS NULL
+                   OR c.not_after < datetime('now', '+' || r.renew_before_days || ' days'))
+              AND (r.last_attempt_at IS NULL
+                   OR r.last_attempt_at < datetime('now', '-1 hour'))"""
+    ) as cur:
+        return await cur.fetchall()
+
+
+async def renew_public(db: aiosqlite.Connection) -> tuple[list[int], int]:
+    """Run every due public certificate. Failures are logged and counted, never
+    raised — one unreachable DNS provider must not stop the rest of the pass,
+    and a public CA refusing one name says nothing about the others.
+
+    The hour of backoff in _due_public matters here: a failing order that
+    retried every tick would burn a rate limit that counts failures, and
+    Let's Encrypt's is measured in hours.
+    """
+    from fastapi import HTTPException
+
+    from app.api.public_certs import run_request
+
+    renewed, failed = [], 0
+    for req in await _due_public(db):
+        try:
+            result = await run_request(db, req["id"])
+            renewed.append(result["certificate_id"])
+            log.info(f"Renewed public certificate '{req['name']}'")
+        except HTTPException as e:
+            failed += 1
+            log.error(f"Public renewal failed for '{req['name']}': {e.detail}")
+        except Exception as e:
+            failed += 1
+            log.error(f"Public renewal failed for '{req['name']}': {e}")
+    return renewed, failed
+
+
 async def run_once(db_path: str) -> dict:
     """One renewal pass. Also used by the manual 'Run Auto-Renewal Now' path."""
     renewed, failed = [], 0
@@ -125,6 +173,10 @@ async def run_once(db_path: str) -> dict:
                 renewed.append(new_id)
             else:
                 failed += 1
+
+        public_renewed, public_failed = await renew_public(db)
+        renewed.extend(public_renewed)
+        failed += public_failed
     return {"status": "ok", "due": len(due), "renewed": renewed, "failed": failed}
 
 

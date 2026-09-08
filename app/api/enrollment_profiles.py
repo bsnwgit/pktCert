@@ -25,7 +25,7 @@ from app.dependencies import AdminUser, CurrentUser
 
 router = APIRouter()
 
-_PROTOCOLS = {"est", "scep"}
+_PROTOCOLS = {"est", "scep", "acme"}
 
 
 def _out(r) -> dict:
@@ -35,6 +35,8 @@ def _out(r) -> dict:
         "username": r["username"], "enabled": bool(r["enabled"]),
         "allowed_name_suffix": r["allowed_name_suffix"],
         "max_certs": r["max_certs"], "issued_count": r["issued_count"],
+        "allow_wildcard": bool(r["allow_wildcard"]),
+        "max_orders_per_hour": r["max_orders_per_hour"],
         "created_at": r["created_at"], "last_used_at": r["last_used_at"],
         # Never the secret itself — it is shown once at creation and never again.
     }
@@ -48,6 +50,14 @@ class ProfileRequest(BaseModel):
     username: str = ""
     allowed_name_suffix: str = ""
     max_certs: int | None = None
+    # ACME only. A wildcard sits inside a suffix constraint legitimately, but it
+    # is one certificate covering the whole namespace and any client holding the
+    # profile secret can ask for it — so it is opted into, not assumed.
+    allow_wildcard: bool = False
+    # ACME only, 0 meaning unlimited. max_certs is a lifetime counter, which
+    # suits EST — a fleet enrols once — but ACME clients come back every renewal
+    # cycle, so a lifetime cap sized on EST intuition strands them mid-renewal.
+    max_orders_per_hour: int = 0
     enabled: bool = True
     # Left empty, pktCert generates one. Better than letting an operator pick
     # a memorable string for a credential that mints certificates.
@@ -66,6 +76,12 @@ async def create_profile(body: ProfileRequest, user: AdminUser, db: aiosqlite.Co
         raise HTTPException(400, f"protocol must be one of: {', '.join(sorted(_PROTOCOLS))}")
     if body.protocol == "est" and not body.username.strip():
         raise HTTPException(400, "EST profiles need a username — devices authenticate with HTTP Basic")
+    if body.protocol == "acme" and not body.username.strip():
+        raise HTTPException(
+            400,
+            "ACME profiles need a username — it is the external account binding key id, "
+            "which the client is configured with alongside the secret",
+        )
 
     async with db.execute("SELECT status FROM certificate_authorities WHERE id = ?", (body.ca_id,)) as cur:
         ca = await cur.fetchone()
@@ -76,16 +92,32 @@ async def create_profile(body: ProfileRequest, user: AdminUser, db: aiosqlite.Co
             raise HTTPException(404, "Template not found")
 
     secret = body.secret or secrets.token_urlsafe(24)
+    if body.protocol == "acme" and body.secret:
+        # An ACME client is configured with the EAB HMAC key as base64url — that
+        # is what every client expects and what it decodes before signing. A
+        # generated secret is base64url already; a supplied one has to be, or
+        # registration fails later with an error about the binding rather than
+        # about the secret, which is a long way from the actual mistake.
+        import base64 as _base64
+        try:
+            _base64.urlsafe_b64decode(body.secret + "=" * ((-len(body.secret)) % 4))
+        except (ValueError, TypeError):
+            raise HTTPException(
+                400,
+                "an ACME profile secret is the external account binding key and must be "
+                "base64url — leave it blank to have one generated",
+            )
 
     try:
         cur = await db.execute(
             """INSERT INTO enrollment_profiles
                (name, protocol, ca_id, template_id, username, secret_enc, enabled,
-                allowed_name_suffix, max_certs)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
+                allowed_name_suffix, max_certs, allow_wildcard, max_orders_per_hour)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
             (body.name, body.protocol, body.ca_id, body.template_id,
              body.username.strip() or None, encrypt_str(secret), int(body.enabled),
-             body.allowed_name_suffix.strip() or None, body.max_certs),
+             body.allowed_name_suffix.strip() or None, body.max_certs,
+             int(body.allow_wildcard), max(0, body.max_orders_per_hour)),
         )
     except aiosqlite.IntegrityError:
         raise HTTPException(409, f"An enrolment profile named '{body.name}' already exists")
@@ -106,9 +138,11 @@ async def update_profile(
 
     await db.execute(
         """UPDATE enrollment_profiles SET name = ?, ca_id = ?, template_id = ?, username = ?,
-           enabled = ?, allowed_name_suffix = ?, max_certs = ? WHERE id = ?""",
+           enabled = ?, allowed_name_suffix = ?, max_certs = ?, allow_wildcard = ?,
+           max_orders_per_hour = ? WHERE id = ?""",
         (body.name, body.ca_id, body.template_id, body.username.strip() or None,
-         int(body.enabled), body.allowed_name_suffix.strip() or None, body.max_certs, profile_id),
+         int(body.enabled), body.allowed_name_suffix.strip() or None, body.max_certs,
+         int(body.allow_wildcard), max(0, body.max_orders_per_hour), profile_id),
     )
     await db.commit()
     async with db.execute("SELECT * FROM enrollment_profiles WHERE id = ?", (profile_id,)) as cur:

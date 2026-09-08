@@ -572,8 +572,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Known Gaps / Fast-Follow Work
 
-- No ACME protocol server (RFC 8555) — issuance is UI/API-driven, or via
-  EST/SCEP for devices.
+- ACME (RFC 8555) is served for enrolment against the internal CA, and spoken
+  outward to obtain publicly-trusted certificates, but neither side is complete:
+  the server validates only `http-01`, so wildcards cannot be issued from the
+  internal CA, and it publishes no renewal information (ARI), so a client cannot
+  be told when to renew. The client side validates only `dns-01`, and Cloudflare
+  is the only DNS provider implemented.
 - No OCSP responder — revocation status is only available via CRL.
 - CA private keys for online CAs are encrypted at rest with a key in
   `config.yaml` on the same host; no PKCS#11/HSM support. An offline root

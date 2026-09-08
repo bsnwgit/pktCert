@@ -45,6 +45,8 @@ from app.api import (
     approvals as approvals_router,
     est as est_router,
     scep as scep_router,
+    acme as acme_router,
+    public_certs as public_certs_router,
     enrollment_profiles as enrollment_profiles_router,
 )
 from app.api import resonance as resonance_router
@@ -217,7 +219,7 @@ def _decode_setting(raw):
 # would break certificate enrolment rather than inconvenience a user.
 _LOCK_ALLOW_PREFIXES = (
     "/api/health", "/api/suite/", "/api/auth/", "/api/resonance/",
-    "/api/widgets/", "/scep", "/.well-known/", "/assets/",
+    "/api/widgets/", "/scep", "/.well-known/", "/assets/", "/acme",
 )
 
 # How long a lock outlives pktHub's last contact. pktHub polls health well
@@ -334,6 +336,7 @@ resonance_data_router.register_error_handler(app)
 resonance_data_router.validate_grants(app)
 app.include_router(approvals_router.router, prefix="/api/approvals",   tags=["approvals"])
 app.include_router(enrollment_profiles_router.router, prefix="/api/enrollment-profiles", tags=["enrollment"])
+app.include_router(public_certs_router.router, prefix="/api/public-certs", tags=["public-certs"])
 # Deliberately outside /api and unauthenticated — see app/api/crl.py's
 # module docstring for why. Registered before the SPA catch-all below so
 # it takes priority over that route's broader "/{full_path:path}" pattern.
@@ -349,6 +352,10 @@ app.include_router(est_router.router,       prefix="/.well-known/est",  tags=["e
 # SCEP (RFC 8894). Also outside /api and before the SPA catch-all — /scep is
 # the conventional path devices are configured with.
 app.include_router(scep_router.router,      prefix="/scep",             tags=["scep"])
+# ACME (RFC 8555). Outside /api and before the SPA catch-all, so that a client
+# built against Let's Encrypt points here by changing one directory URL.
+# Authentication is the JWS on each request, not a pktCert credential.
+app.include_router(acme_router.router,      prefix="/acme",             tags=["acme"])
 
 # -- Health check ------------------------------------------------------------------
 

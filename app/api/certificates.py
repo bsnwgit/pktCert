@@ -56,6 +56,11 @@ def _cert_out(r) -> dict:
         "renewed_to_id": r["renewed_to_id"] if "renewed_to_id" in r.keys() else None,
         "auto_renew": bool(r["auto_renew"]) if "auto_renew" in r.keys() else False,
         "auto_renew_days": r["auto_renew_days"] if "auto_renew_days" in r.keys() else 30,
+        # Public certificates (migration 017) renew through their managed
+        # request rather than a CA and template, so the detail view needs to
+        # know which one maintains this certificate to offer renewal at all.
+        "public_request_id": r["public_request_id"] if "public_request_id" in r.keys() else None,
+        "acme_order_id": r["acme_order_id"] if "acme_order_id" in r.keys() else None,
     }
 
 
