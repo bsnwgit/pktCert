@@ -13,7 +13,7 @@ import json
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.database import get_db
 from app.dependencies import AdminUser, CurrentUser
@@ -52,7 +52,12 @@ class CaGenerateRequest(BaseModel):
     ca_type: str = "root"          # root | intermediate
     parent_ca_id: int | None = None
     key_algorithm: str = "rsa"     # rsa | ec
-    key_size: int = 4096
+    # Floored here, not just at enrolment. enrollment.py bounds the keys devices
+    # bring to us; nothing bounded the ones we generate, so a CA — the key every
+    # certificate under it depends on — could be created at any width the caller
+    # asked for. For EC these same numbers select a curve (see x509_utils), so
+    # one bound reads correctly for both algorithms.
+    key_size: int = Field(4096, ge=2048, le=16384)
     validity_days: int = 3650
     # How many further CAs may sit below this one. Left unset, an intermediate
     # gets 0 (it may issue end-entity certificates but not another CA) and a
@@ -307,7 +312,7 @@ class IntermediateCsrRequest(BaseModel):
     name: str
     parent_ca_id: int
     key_algorithm: str = "rsa"
-    key_size: int = 4096
+    key_size: int = Field(4096, ge=2048, le=16384)
     path_length: int | None = 0
     permitted_dns: list[str] = []
     excluded_dns: list[str] = []
