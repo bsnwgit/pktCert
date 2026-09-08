@@ -31,7 +31,7 @@ import logging
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.cert import acme_client, dns as dns_registry, x509_utils
 from app.cert.crypto import decrypt_str, encrypt_str
@@ -230,7 +230,9 @@ class CertRequest(BaseModel):
     dns_provider_id: int
     identifiers: list[str]
     key_algorithm: str = "ec"
-    key_size: int = 2048
+    # Same floor and the same shared vocabulary as a CA or a template: for EC
+    # these select a curve, for RSA a modulus size. See x509_utils.
+    key_size: int = Field(2048, ge=2048, le=16384)
     renew_before_days: int = 30
     auto_renew: bool = True
     enabled: bool = True

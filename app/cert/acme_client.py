@@ -215,8 +215,13 @@ class AcmeClient:
             waited += _POLL_INTERVAL
         raise AcmeClientError(f"the {what} did not settle within {int(_POLL_TIMEOUT)}s")
 
+    # 2048 rather than 256: generate_private_key takes one vocabulary for both
+    # algorithms, where 2048/3072/4096 select P-256/P-384/P-521 for EC and the
+    # modulus size for RSA. A 256 here reads as P-256 only for as long as the
+    # caller asks for EC — pass "rsa" and it asks for a 256-bit RSA key, which
+    # is the default this parameter had.
     async def obtain(self, identifiers: list[str], provider_name: str, credential: str,
-                     key_algorithm: str = "ec", key_size: int = 256) -> tuple[str, str]:
+                     key_algorithm: str = "ec", key_size: int = 2048) -> tuple[str, str]:
         """Run a full order and return (certificate chain PEM, private key PEM).
 
         The key is generated here and never leaves pktCert, which is what makes
