@@ -8,7 +8,7 @@
 // click. The secret is shown exactly once, at creation.
 
 import { useCallback, useEffect, useState } from 'react'
-import { api, CertificateAuthority, CertTemplate, EnrollmentProfile, EnrollmentLogEntry } from '../api/client'
+import { api, CertificateAuthority, CertTemplate, EnrollmentProfile, EnrollmentProtocol, EnrollmentLogEntry } from '../api/client'
 import HelpButton from '../components/HelpButton'
 
 const INPUT = 'w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-sky-500'
@@ -51,12 +51,14 @@ export default function Enrollment() {
 
   // New-profile form
   const [name, setName] = useState('')
-  const [protocol, setProtocol] = useState<'est' | 'scep'>('est')
+  const [protocol, setProtocol] = useState<EnrollmentProtocol>('est')
   const [caId, setCaId] = useState<number | ''>('')
   const [templateId, setTemplateId] = useState<number | ''>('')
   const [username, setUsername] = useState('')
   const [suffix, setSuffix] = useState('')
   const [maxCerts, setMaxCerts] = useState('')
+  const [allowWildcard, setAllowWildcard] = useState(false)
+  const [ordersPerHour, setOrdersPerHour] = useState('')
   const [saving, setSaving] = useState(false)
 
   const load = useCallback(async () => {
@@ -85,10 +87,13 @@ export default function Enrollment() {
         name, protocol, ca_id: Number(caId), template_id: Number(templateId),
         username, allowed_name_suffix: suffix,
         max_certs: maxCerts === '' ? null : Number(maxCerts),
+        allow_wildcard: allowWildcard,
+        max_orders_per_hour: ordersPerHour === '' ? 0 : Number(ordersPerHour),
       })
       setSecret(r.secret)
       setShowAdd(false)
       setName(''); setUsername(''); setSuffix(''); setMaxCerts('')
+      setAllowWildcard(false); setOrdersPerHour('')
       await load()
     } catch (e: any) {
       setError(e.message ?? 'Could not create the profile')
@@ -110,6 +115,10 @@ export default function Enrollment() {
         name: p.name, protocol: p.protocol, ca_id: p.ca_id, template_id: p.template_id,
         username: p.username ?? '', allowed_name_suffix: p.allowed_name_suffix ?? '',
         max_certs: p.max_certs, enabled: !p.enabled,
+        // The PATCH replaces the whole profile, so anything left out here is
+        // reset to its default — disabling an ACME profile would silently drop
+        // its wildcard permission and order rate.
+        allow_wildcard: p.allow_wildcard, max_orders_per_hour: p.max_orders_per_hour,
       })
       await load()
     } catch (e: any) { setError(e.message ?? 'Could not update the profile') }
@@ -137,6 +146,8 @@ export default function Enrollment() {
             <p>The secret is shown once, when the profile is created, and stored encrypted afterwards. Rotate it if it leaks; every device on the old secret stops enrolling immediately.</p>
             <p><span className="text-gray-300 font-medium">EST</span> devices go to <code className="text-gray-300">https://this-server/.well-known/est/</code> and authenticate with the profile's username and secret. <code className="text-gray-300">/cacerts</code> needs no credentials, so a device can install the trust anchor before it has anything to authenticate with.</p>
             <p><span className="text-gray-300 font-medium">SCEP</span> devices go to <code className="text-gray-300">http://this-server/scep</code> and use the profile's secret as their <em>challenge password</em>. There's no username. SCEP is the older protocol but it's what most network hardware and MDM actually speaks — Cisco, Juniper, Palo Alto, Fortinet, Intune. Its request body is encrypted to the CA, so unlike EST it doesn't require TLS.</p>
+            <p><span className="text-gray-300 font-medium">ACME</span> is what servers speak — Caddy, Traefik, cert-manager, certbot and acme.sh all use it, and they all renew on their own without anyone watching. Point a client at <code className="text-gray-300">http://this-server/acme/directory</code> and give it this profile's <em>key ID</em> and <em>secret</em> as its external account binding credentials. Every account must be bound to a profile that way: an internal CA that signs whatever it is asked for would issue a trusted certificate for any name on the network to anyone who can reach it.</p>
+            <p><span className="text-gray-300 font-medium">ACME renewal is the client's job, not pktCert's.</span> The client holds the private key, so it places a fresh order when its certificate ages — pktCert cannot renew one on its behalf. What it does do is recognise the renewal and mark the previous certificate superseded, so it stops raising expiry alerts and the two generations stay linked in the inventory.</p>
             <p><span className="text-gray-300 font-medium">EST requires TLS.</span> The request carries a secret that yields a trusted certificate, so over plain HTTP that secret belongs to anyone on the path. Enrolment over HTTP is refused unless you deliberately allow it for an isolated network.</p>
           </HelpButton>
         </div>
@@ -158,9 +169,10 @@ export default function Enrollment() {
             </div>
             <div>
               <label className="block text-xs text-white mb-1">Protocol</label>
-              <select value={protocol} onChange={e => setProtocol(e.target.value as 'est' | 'scep')} className={INPUT}>
+              <select value={protocol} onChange={e => setProtocol(e.target.value as EnrollmentProtocol)} className={INPUT}>
                 <option value="est">EST (RFC 7030)</option>
                 <option value="scep">SCEP (RFC 8894)</option>
+                <option value="acme">ACME (RFC 8555)</option>
               </select>
             </div>
             <div>
@@ -179,28 +191,61 @@ export default function Enrollment() {
             </div>
             <div>
               <label className="block text-xs text-white mb-1">
-                Username{protocol === 'scep' ? ' (not used by SCEP)' : ''}
+                {protocol === 'acme' ? 'Key ID' : `Username${protocol === 'scep' ? ' (not used by SCEP)' : ''}`}
               </label>
-              <input value={username} onChange={e => setUsername(e.target.value)} placeholder="switches"
+              <input value={username} onChange={e => setUsername(e.target.value)}
+                placeholder={protocol === 'acme' ? 'web-servers' : 'switches'}
                 disabled={protocol === 'scep'} className={INPUT} />
               <p className="text-xs text-slate-400 mt-1">
                 {protocol === 'scep'
                   ? 'SCEP has no username — a device authenticates with the challenge password alone.'
-                  : 'Devices authenticate with HTTP Basic — this is the username half.'}
+                  : protocol === 'acme'
+                    ? 'The external account binding key ID. A client is configured with this and the secret together.'
+                    : 'Devices authenticate with HTTP Basic — this is the username half.'}
               </p>
             </div>
             <div>
               <label className="block text-xs text-white mb-1">Allowed name suffix (optional)</label>
-              <input value={suffix} onChange={e => setSuffix(e.target.value)} placeholder=".corp.example.com" className={INPUT} />
-              <p className="text-xs text-slate-400 mt-1">Refuses any request for a name outside this suffix.</p>
+              <input value={suffix} onChange={e => setSuffix(e.target.value)} placeholder="corp.example.com" className={INPUT} />
+              <p className="text-xs text-slate-400 mt-1">
+                Refuses any request for a name outside this suffix. Matched on a label boundary, so
+                <span className="text-gray-300"> corp.example.com</span> covers itself and anything under it,
+                but never <span className="text-gray-300">notcorp.example.com</span>. Lead with a dot to
+                exclude the domain itself.
+              </p>
             </div>
-            <div>
-              <label className="block text-xs text-white mb-1">Certificate limit (optional)</label>
-              <input value={maxCerts} onChange={e => setMaxCerts(e.target.value)} type="number" min={1} placeholder="unlimited" className={INPUT} />
-              <p className="text-xs text-slate-400 mt-1">Caps how many certificates this profile may ever issue.</p>
-            </div>
+            {protocol === 'acme' ? (
+              <div>
+                <label className="block text-xs text-white mb-1">Orders per hour (optional)</label>
+                <input value={ordersPerHour} onChange={e => setOrdersPerHour(e.target.value)} type="number" min={0}
+                  placeholder="unlimited" className={INPUT} />
+                <p className="text-xs text-slate-400 mt-1">
+                  ACME clients come back every renewal cycle, so they are bounded by a rate rather than a
+                  lifetime total. A client that trips this retries and succeeds later.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <label className="block text-xs text-white mb-1">Certificate limit (optional)</label>
+                <input value={maxCerts} onChange={e => setMaxCerts(e.target.value)} type="number" min={1} placeholder="unlimited" className={INPUT} />
+                <p className="text-xs text-slate-400 mt-1">Caps how many certificates this profile may ever issue.</p>
+              </div>
+            )}
+            {protocol === 'acme' && (
+              <div className="md:col-span-2">
+                <label className="flex items-start gap-2 text-xs text-white">
+                  <input type="checkbox" checked={allowWildcard} onChange={e => setAllowWildcard(e.target.checked)}
+                    className="mt-0.5" />
+                  <span>Allow wildcard certificates</span>
+                </label>
+                <p className="text-xs text-slate-400 mt-1">
+                  A wildcard stays inside the name suffix, but one certificate then covers every name under it
+                  and any client holding this secret can ask for it. Wildcards can only be proved over DNS.
+                </p>
+              </div>
+            )}
           </div>
-          <button onClick={create} disabled={saving || !name.trim() || !caId || !templateId || (protocol === 'est' && !username.trim())}
+          <button onClick={create} disabled={saving || !name.trim() || !caId || !templateId || (protocol !== 'scep' && !username.trim())}
             className="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors">
             {saving ? 'Creating…' : 'Create Profile'}
           </button>

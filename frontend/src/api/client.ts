@@ -264,18 +264,52 @@ export const api = {
   // -- Enrolment profiles (EST / SCEP device enrolment) ------------------------------
   getEnrollmentProfiles: () => request<EnrollmentProfile[]>('/enrollment-profiles'),
   createEnrollmentProfile: (body: {
-    name: string; protocol: 'est' | 'scep'; ca_id: number; template_id: number
+    name: string; protocol: EnrollmentProtocol; ca_id: number; template_id: number
     username?: string; allowed_name_suffix?: string; max_certs?: number | null; enabled?: boolean
+    allow_wildcard?: boolean; max_orders_per_hour?: number
   }) => request<EnrollmentProfile & { secret: string }>('/enrollment-profiles', { method: 'POST', body: JSON.stringify(body) }),
   updateEnrollmentProfile: (id: number, body: {
-    name: string; protocol: 'est' | 'scep'; ca_id: number; template_id: number
+    name: string; protocol: EnrollmentProtocol; ca_id: number; template_id: number
     username?: string; allowed_name_suffix?: string; max_certs?: number | null; enabled?: boolean
+    allow_wildcard?: boolean; max_orders_per_hour?: number
   }) => request<EnrollmentProfile>(`/enrollment-profiles/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   rotateEnrollmentSecret: (id: number) =>
     request<{ secret: string }>(`/enrollment-profiles/${id}/rotate-secret`, { method: 'POST' }),
   deleteEnrollmentProfile: (id: number) => request(`/enrollment-profiles/${id}`, { method: 'DELETE' }),
   getEnrollmentLog: (params?: { outcome?: string; limit?: number }) =>
     request<EnrollmentLogEntry[]>(`/enrollment-profiles/log${toQueryString(params)}`),
+
+  // -- Public certificates (ACME client) -----------------------------------------------
+  getDnsProviderTypes: () => request<DnsProviderType[]>('/public-certs/providers'),
+  getAcmeDirectories: () => request<{ key: string; url: string }[]>('/public-certs/directories'),
+  getDnsProviders: () => request<DnsProvider[]>('/public-certs/dns-providers'),
+  createDnsProvider: (body: { name: string; provider: string; credential: string; enabled?: boolean }) =>
+    request<DnsProvider>('/public-certs/dns-providers', { method: 'POST', body: JSON.stringify(body) }),
+  testDnsProvider: (id: number) =>
+    request<{ status: string; detail: string }>(`/public-certs/dns-providers/${id}/test`, { method: 'POST' }),
+  deleteDnsProvider: (id: number) => request(`/public-certs/dns-providers/${id}`, { method: 'DELETE' }),
+
+  getPublicAcmeAccounts: () => request<PublicAcmeAccount[]>('/public-certs/accounts'),
+  createPublicAcmeAccount: (body: {
+    name: string; directory_url: string; environment: string
+    contact_email?: string; eab_kid?: string; eab_hmac_key?: string
+  }) => request<PublicAcmeAccount>('/public-certs/accounts', { method: 'POST', body: JSON.stringify(body) }),
+  deletePublicAcmeAccount: (id: number) => request(`/public-certs/accounts/${id}`, { method: 'DELETE' }),
+
+  getPublicCertRequests: () => request<PublicCertRequest[]>('/public-certs/requests'),
+  createPublicCertRequest: (body: {
+    name: string; account_id: number; dns_provider_id: number; identifiers: string[]
+    key_algorithm?: string; key_size?: number; renew_before_days?: number; auto_renew?: boolean
+  }) => request<PublicCertRequest>('/public-certs/requests', { method: 'POST', body: JSON.stringify(body) }),
+  updatePublicCertRequest: (id: number, body: {
+    auto_renew?: boolean; renew_before_days?: number; enabled?: boolean
+  }) => request<PublicCertRequest>(`/public-certs/requests/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  issuePublicCert: (id: number) =>
+    request<{ status: string; certificate_id: number; not_after: string }>(`/public-certs/requests/${id}/issue`, { method: 'POST' }),
+  revokePublicCert: (id: number, reason = 0) =>
+    request<{ status?: string; pending_approval?: boolean; request_id?: number; detail?: string }>(
+      `/public-certs/requests/${id}/revoke?reason=${reason}`, { method: 'POST' }),
+  deletePublicCertRequest: (id: number) => request(`/public-certs/requests/${id}`, { method: 'DELETE' }),
 
   // -- Templates ---------------------------------------------------------------------
   getTemplates: () => request<CertTemplate[]>('/templates'),
@@ -536,7 +570,9 @@ export interface User {
 }
 
 export type CertStatus = 'valid' | 'expiring' | 'expired' | 'revoked' | 'superseded' | 'unknown'
-export type CertSource = 'scan' | 'ct' | 'issued' | 'external'
+// 'enrolled' is EST/SCEP/ACME against the internal CA; 'public' is obtained
+// from an outside CA over ACME. Both land in the same inventory.
+export type CertSource = 'scan' | 'ct' | 'issued' | 'enrolled' | 'public' | 'external'
 
 export interface Certificate {
   id: number
@@ -571,6 +607,10 @@ export interface Certificate {
   renewed_to_id: number | null
   auto_renew: boolean
   auto_renew_days: number
+  // Set for certificates obtained from a public CA — renewal for those runs
+  // through the managed request, not a local CA and template.
+  public_request_id: number | null
+  acme_order_id: number | null
   private_key_pem?: string
 }
 
@@ -617,10 +657,58 @@ export interface AlertCondition {
   params: AlertConditionParam[]
 }
 
+export interface DnsProviderType {
+  name: string
+  label: string
+  credential_help: string
+  automatic: boolean
+}
+
+export interface DnsProvider {
+  id: number
+  name: string
+  provider: string
+  enabled: boolean
+  last_used_at: string | null
+  last_error: string | null
+  created_at: string
+}
+
+export interface PublicAcmeAccount {
+  id: number
+  name: string
+  directory_url: string
+  environment: string
+  account_url: string | null
+  contact: string[]
+  registered: boolean
+  created_at: string
+}
+
+export interface PublicCertRequest {
+  id: number
+  name: string
+  account_id: number
+  dns_provider_id: number
+  identifiers: string[]
+  key_algorithm: string
+  key_size: number
+  renew_before_days: number
+  auto_renew: boolean
+  enabled: boolean
+  status: string
+  last_error: string | null
+  last_attempt_at: string | null
+  certificate_id: number | null
+  created_at: string
+}
+
+export type EnrollmentProtocol = 'est' | 'scep' | 'acme'
+
 export interface EnrollmentProfile {
   id: number
   name: string
-  protocol: 'est' | 'scep'
+  protocol: EnrollmentProtocol
   ca_id: number
   template_id: number
   username: string | null
@@ -628,6 +716,12 @@ export interface EnrollmentProfile {
   allowed_name_suffix: string | null
   max_certs: number | null
   issued_count: number
+  // ACME only. A wildcard stays inside the name suffix but covers every name
+  // under it, so it is opted into rather than assumed.
+  allow_wildcard: boolean
+  // ACME only, 0 meaning unlimited. ACME clients renew on a cycle, so they are
+  // bounded by a rate rather than by max_certs, which is a lifetime counter.
+  max_orders_per_hour: number
   created_at: string
   last_used_at: string | null
 }

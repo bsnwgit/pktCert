@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { api, Certificate, CertificateAuthority, CertTemplate } from '../api/client'
+import { api, Certificate, CertificateAuthority, CertTemplate, PublicCertRequest } from '../api/client'
 import { useAuth } from '../store/auth'
 import HelpButton from '../components/HelpButton'
 import Pagination from '../components/Pagination'
@@ -18,6 +18,53 @@ const STATUS_STYLES: Record<string, string> = {
   unknown: 'bg-sky-500/20 text-sky-400 border border-sky-500/40',
 }
 
+// How a certificate got here, said plainly and in its own words. This column
+// carries no colour: the question a colour was really answering is Type's, and
+// it is asked and answered there instead.
+const SOURCE_LABELS: Record<string, string> = {
+  issued: 'Issued',
+  enrolled: 'Enrolled',
+  public: 'Public',
+  external: 'External',
+  scan: 'Scanned',
+  ct: 'CT Search',
+}
+
+// Whether the certificate is ours to reissue. Issuing and enrolling both end at
+// a CA pktCert operates, so both read Internal however differently they were
+// requested. A public or uploaded certificate does not, and discovery finding
+// one says nothing either way — which is a third answer rather than a missing
+// one, and is why a scanned certificate is not quietly filed as external.
+const TYPE_LABELS: Record<string, string> = {
+  issued: 'Internal',
+  enrolled: 'Internal',
+  public: 'External',
+  external: 'External',
+  scan: 'Unknown',
+  ct: 'Unknown',
+}
+
+// Keyed by source rather than by the label above, because the shade draws a
+// distinction the word deliberately does not. Green is our own CA. Amber is a
+// public CA: entirely legitimate, and renewed on somebody else's schedule
+// rather than on demand. Red is the uploaded case, where pktCert has no way to
+// obtain a replacement at all — both are External, and only one of them is a
+// problem waiting to happen. Neutral is discovery, which observed a
+// certificate and learned nothing about who controls it.
+const TYPE_STYLES: Record<string, string> = {
+  issued: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40',
+  enrolled: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40',
+  public: 'bg-amber-500/20 text-amber-400 border border-amber-500/40',
+  external: 'bg-red-500/20 text-red-400 border border-red-500/40',
+  scan: 'bg-slate-500/20 text-slate-300 border border-slate-500/40',
+  ct: 'bg-slate-500/20 text-slate-300 border border-slate-500/40',
+}
+
+const sourceLabel = (source: string) => SOURCE_LABELS[source] ?? source
+const typeLabel = (source: string) => TYPE_LABELS[source] ?? 'Unknown'
+const typeStyle = (source: string) =>
+  TYPE_STYLES[source] ?? 'bg-slate-500/20 text-slate-300 border border-slate-500/40'
+
 // RFC 5280 §5.3.1 reasonCode values, published in the CRL entry. Ordered by
 // how often they're actually the right answer, not by their numeric code.
 const REVOCATION_REASONS: { value: string; label: string }[] = [
@@ -31,6 +78,22 @@ const REVOCATION_REASONS: { value: string; label: string }[] = [
   { value: 'certificate_hold', label: 'Certificate hold — temporarily suspended' },
   { value: 'aa_compromise', label: 'AA compromise — attribute authority exposed' },
 ]
+
+// The numeric RFC 5280 values behind those names. pktCert's own CRL is written
+// from the name, but ACME's revokeCert carries the integer, so a public
+// certificate needs the code itself. Names absent here have no ACME-acceptable
+// code and fall back to unspecified.
+const REASON_CODE_NUMBERS: Record<string, number> = {
+  unspecified: 0,
+  key_compromise: 1,
+  ca_compromise: 2,
+  affiliation_changed: 3,
+  superseded: 4,
+  cessation_of_operation: 5,
+  certificate_hold: 6,
+  privilege_withdrawn: 9,
+  aa_compromise: 10,
+}
 
 const PAGE_SIZE_DEFAULT = 25
 const PAGE_SIZE_OPTIONS = [25, 50, 75, 100]
@@ -267,6 +330,26 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
   // externally-issued cert.
   const renewable = cert.source === 'issued' && cert.ca_id !== null && cert.template_id !== null
 
+  // A public certificate renews through its managed request instead — there is
+  // no local CA or template behind it, and the order goes back out to the
+  // issuing CA. The controls belong here all the same: this is where someone
+  // looks when they want to know whether a certificate will renew itself.
+  const publicRenewable = cert.source === 'public' && cert.public_request_id !== null
+  const [publicReq, setPublicReq] = useState<PublicCertRequest | null>(null)
+
+  useEffect(() => {
+    if (!publicRenewable) return
+    api.getPublicCertRequests()
+      .then(rs => setPublicReq(rs.find(r => r.id === cert.public_request_id) ?? null))
+      .catch(() => setPublicReq(null))
+  }, [publicRenewable, cert.public_request_id])
+
+  const savePublic = async (patch: { auto_renew?: boolean; renew_before_days?: number }) => {
+    if (!publicReq) return
+    try { setPublicReq(await api.updatePublicCertRequest(publicReq.id, patch)) }
+    catch { /* the row stays as it was; the next open re-reads it */ }
+  }
+
   const filenameBase = safeFilename(cert.common_name)
 
   const viewPem = (fmt: 'pem' | 'chain') => setPending({
@@ -302,6 +385,26 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
       downloadFile(field === 'key' ? `${filenameBase}-key.pem` : `${filenameBase}-passcode.txt`, value, field === 'key' ? 'application/x-pem-file' : 'text/plain')
     },
   })
+
+  const doPublicRenew = async () => {
+    if (!publicReq) return
+    if (!confirm(
+      `Replace '${cert.common_name}' now?\n\n` +
+      'A fresh order goes to the issuing certificate authority and a new private key is generated. ' +
+      'The current certificate stays valid and is marked superseded — it is NOT revoked, so ' +
+      'the running service keeps working until you install the replacement.\n\n' +
+      'Public CAs rate-limit identical name sets, so avoid repeating this unnecessarily.'
+    )) return
+    setRenewing(true)
+    try {
+      await api.issuePublicCert(publicReq.id)
+      onChanged()
+    } catch (e: any) {
+      alert(e.message ?? 'Could not replace the certificate')
+    } finally {
+      setRenewing(false)
+    }
+  }
 
   const doRenew = async () => {
     if (!confirm(
@@ -339,6 +442,19 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
     if (!confirm(`Revoke certificate '${cert.common_name}'? This cannot be undone.`)) return
     setRevoking(true)
     try {
+      // A public certificate has to be revoked at the CA that issued it —
+      // marking it revoked here and publishing a local CRL would change
+      // nothing for anyone relying on it, because nobody checks pktCert's CRL
+      // for a Let's Encrypt certificate.
+      if (publicRenewable && publicReq) {
+        const res = await api.revokePublicCert(publicReq.id, REASON_CODE_NUMBERS[reasonCode] ?? 0)
+        onChanged()
+        if (res?.pending_approval) {
+          alert(res.detail ?? 'Revocation submitted for approval — nothing has been revoked at the CA yet.')
+        }
+        onClose()
+        return
+      }
       const res = await api.revokeCertificate(cert.id, reason, reasonCode)
       onChanged()
       if (res?.pending_approval) {
@@ -358,7 +474,18 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
           <span className={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium capitalize ${STATUS_STYLES[cert.status]}`}>{cert.status}</span>
         </div>
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm mb-4">
-          <div><span className="text-white">Source</span><p className="text-white capitalize">{cert.source}</p></div>
+          <div>
+            <span className="text-white">Source</span>
+            <p className="text-white">{sourceLabel(cert.source)}</p>
+          </div>
+          <div>
+            <span className="text-white">Type</span>
+            <p>
+              <span className={`inline-block mt-0.5 text-xs px-2 py-0.5 rounded-full ${typeStyle(cert.source)}`}>
+                {typeLabel(cert.source)}
+              </span>
+            </p>
+          </div>
           <div><span className="text-white">Serial</span><p className="text-white font-mono text-xs break-all">{cert.serial_number}</p></div>
           <div><span className="text-white">Not Before</span><p className="text-white">{fmtDate(cert.not_before)}</p></div>
           <div><span className="text-white">Not After</span><p className="text-white">{fmtDate(cert.not_after)}</p></div>
@@ -441,6 +568,38 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
               Renewing issues a new certificate and a new private key from the same CA and template.
               The current one is marked superseded but stays valid and is <span className="text-amber-300">not</span> revoked,
               so the running service keeps working until you install the replacement — revoke it yourself once you have.
+            </p>
+          </div>
+        )}
+
+        {isAdmin && publicRenewable && publicReq && cert.status !== 'revoked' && !cert.renewed_to_id && (
+          <div className="border-t border-gray-800 pt-4 mb-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              <button onClick={doPublicRenew} disabled={renewing}
+                className="text-sm bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded-lg px-4 py-2 transition-colors">
+                {renewing ? 'Replacing…' : 'Replace Now'}
+              </button>
+              <label className="flex items-center gap-2 text-xs text-white">
+                <input type="checkbox" checked={publicReq.auto_renew} className="accent-sky-500"
+                  onChange={e => savePublic({ auto_renew: e.target.checked })} />
+                Auto-renew within
+              </label>
+              <input type="number" min={1} max={365} defaultValue={publicReq.renew_before_days}
+                disabled={!publicReq.auto_renew}
+                onBlur={e => {
+                  const days = Number(e.target.value)
+                  if (days >= 1 && days !== publicReq.renew_before_days) savePublic({ renew_before_days: days })
+                }}
+                className="w-16 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-xs text-white disabled:opacity-50" />
+              <span className="text-xs text-white">days of expiry</span>
+            </div>
+            <p className="text-xs text-white/70 mt-2">
+              Renewal places a fresh order with {publicReq.name}'s certificate authority and generates a new private key.
+              The current one is marked superseded but stays valid and is <span className="text-amber-300">not</span> revoked,
+              so the running service keeps working until you install the replacement.
+              {!publicReq.auto_renew && (
+                <span className="text-amber-300"> Auto-renew is off — this certificate will not replace itself.</span>
+              )}
             </p>
           </div>
         )}
@@ -668,6 +827,8 @@ export default function Certificates() {
           <option value="scan">Scanned</option>
           <option value="ct">CT Search</option>
           <option value="issued">Issued</option>
+          <option value="enrolled">Enrolled (EST / SCEP / ACME)</option>
+          <option value="public">Public CA</option>
           <option value="external">External / Uploaded</option>
         </select>
         <label className="flex items-center gap-1.5 text-xs text-white cursor-pointer select-none">
@@ -704,23 +865,29 @@ export default function Certificates() {
               <th className="px-4 py-3 text-left text-xs font-medium text-white">Common Name</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-white">Status</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-white">Source</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-white">Type</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-white">Issuer</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-white">Expires</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800/50">
-            {loading && <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-white">Loading…</td></tr>}
+            {loading && <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-white">Loading…</td></tr>}
             {!loading && paged.map(c => (
               <tr key={c.id} onClick={() => setSelected(c)} className="hover:bg-gray-800/30 transition-colors cursor-pointer">
                 <td className="px-4 py-3 font-mono text-white truncate max-w-xs">{c.common_name}</td>
                 <td className="px-4 py-3"><span className={`text-xs px-2 py-0.5 rounded-full capitalize ${STATUS_STYLES[c.status]}`}>{c.status}</span></td>
-                <td className="px-4 py-3 text-white text-xs capitalize">{c.source}</td>
+                <td className="px-4 py-3 text-white text-xs">{sourceLabel(c.source)}</td>
+                <td className="px-4 py-3">
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${typeStyle(c.source)}`}>
+                    {typeLabel(c.source)}
+                  </span>
+                </td>
                 <td className="px-4 py-3 text-white text-xs truncate max-w-xs">{c.issuer}</td>
                 <td className="px-4 py-3 text-white">{fmtDate(c.not_after)}</td>
               </tr>
             ))}
             {!loading && paged.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-white">
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-white">
                 {certs.length === 0 ? 'No certificates yet — add a Scan Target or issue one.' : 'No certificates match this filter'}
               </td></tr>
             )}

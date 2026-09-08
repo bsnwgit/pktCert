@@ -115,7 +115,7 @@ GRANTED: tuple[Grant, ...] = (
 # is published through listCertificateAuthorities instead.
 
 CertStatus = Literal["valid", "expiring", "expired", "revoked"]
-CertSource = Literal["issued", "enrolled", "scan", "ct", "external"]
+CertSource = Literal["issued", "enrolled", "public", "scan", "ct", "external"]
 CaType = Literal["root", "intermediate"]
 AlertSeverity = Literal["info", "warning", "critical"]
 RequestType = Literal["issue", "revoke"]
@@ -302,7 +302,12 @@ class Certificate(BaseModel):
     signature_algorithm: Optional[str] = Field(None, description="Algorithm the issuer signed with.")
     status: Optional[str] = Field(None, description="valid, expiring, expired or revoked.")
     source: Optional[str] = Field(
-        None, description="How pktCert came to know about it: issued, enrolled, scan, ct or external."
+        None,
+        description=(
+            "How pktCert came to know about it: issued by an internal CA, enrolled against one, "
+            "public for a certificate obtained from a public CA over ACME, external for one "
+            "uploaded from elsewhere, or scan and ct for one only observed by discovery."
+        ),
     )
     host: Optional[str] = Field(None, description="Where discovery found it, if it was discovered.")
     port: Optional[int] = Field(None, description="Port it was found on, if it was discovered.")
@@ -603,7 +608,8 @@ def _days_until(not_after: Optional[str]) -> Optional[int]:
     summary="Search the certificate inventory",
     description=(
         "Search every certificate pktCert knows about — the ones it issued from an internal CA, "
-        "the ones devices enrolled for themselves, and the ones network scanning or certificate "
+        "the ones devices enrolled for themselves, the ones it obtained from a public CA over "
+        "ACME, the ones uploaded from elsewhere, and the ones network scanning or certificate "
         "transparency found. Soonest expiry first, which is almost always the order the question "
         "wants. Use expiring_within_days for 'what is about to expire'; it counts from now, so 30 "
         "means the next thirty days and includes anything already expired unless status is also "

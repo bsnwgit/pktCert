@@ -8,7 +8,7 @@ import json
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.database import get_db
 from app.dependencies import AdminUser, CurrentUser
@@ -29,7 +29,10 @@ def _template_out(r) -> dict:
 class TemplateRequest(BaseModel):
     name: str
     key_algorithm: str = "rsa"
-    key_size: int = 2048
+    # A template is the width every certificate issued through it inherits, so
+    # the same floor applies here as to a CA. For EC these numbers select a
+    # curve rather than a modulus size — see x509_utils.generate_private_key.
+    key_size: int = Field(2048, ge=2048, le=16384)
     validity_days: int = 365
     key_usage: list[str] = ["digital_signature", "key_encipherment"]
     extended_key_usage: list[str] = ["server_auth"]

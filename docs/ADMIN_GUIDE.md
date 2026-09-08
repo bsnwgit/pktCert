@@ -193,6 +193,145 @@ SCEP support adds one dependency, `asn1crypto` (pure Python, no compiled
 extensions). It's in `requirements.txt`; an existing install needs
 `pip install -r requirements.txt` inside its venv before SCEP will start.
 
+## Server enrolment (ACME)
+
+Settings → Enrolment, protocol `acme`. Same profile model as EST and SCEP, for
+the things EST and SCEP don't reach: Caddy, Traefik, cert-manager, certbot and
+acme.sh all speak ACME and all renew unattended.
+
+Point a client at `http://<pktcert>/acme/directory`. Every account must be
+bound to a profile through **external account binding** — the profile's *Key
+ID* and *secret* are the client's EAB credentials. Binding is mandatory: an
+internal CA that signs whatever it is asked for would hand a trusted
+certificate for any name on the network to anything that can reach it.
+
+```
+certbot certonly \
+  --server http://pktcert.example.com:8763/acme/directory \
+  --eab-kid web-servers --eab-hmac-key <profile secret> \
+  --standalone -d www.corp.example.com
+```
+
+The Key ID is whatever you type when creating the profile; the secret is
+generated and shown once.
+
+**Renewal is the client's job.** The client holds the private key, so pktCert
+cannot renew on its behalf — the client places a fresh order when its
+certificate ages. pktCert recognises that as a renewal and marks the previous
+certificate superseded, so it stops raising expiry alerts and the generations
+stay linked in the inventory.
+
+Validation is `http-01`: pktCert connects **outward** to port 80 on the name
+being certified and reads the challenge. That works here in a way it never does
+publicly — a public CA cannot reach a host on a private range. The host must be
+reachable from pktCert on port 80 for the duration of the order.
+
+Wildcards can only be proved over DNS, which this side does not yet do. The
+per-profile wildcard switch exists but a wildcard order cannot currently
+complete.
+
+**These certificates are only trusted by machines that have your root
+installed.** For anything the public has to trust, see the next section.
+
+## Public certificates (Let's Encrypt)
+
+Settings → Public Certs. This is the opposite direction: pktCert as an ACME
+*client*, obtaining certificates from a CA that is already in every browser and
+OS trust store, so the result is trusted natively with nothing to install.
+
+An internal root cannot be publicly trusted — that takes an audit programme,
+not a configuration change — so anything outside users must trust has to be
+issued from outside.
+
+A full worked walkthrough, including creating the DNS credential and proving
+the path on staging first, is in
+[LetsEncrypt-Cloudflare.md](LetsEncrypt-Cloudflare.md).
+
+### What you need first
+
+* **A publicly registered domain.** A public CA only issues for a real domain.
+  Internal-only suffixes (`.lan`, `.local`, `.internal`, `.home`, `.corp`) are
+  refused when you enter them, rather than after burning a rate-limited
+  validation attempt.
+* **API access to that domain's DNS.** Validation is `dns-01` throughout.
+
+Nothing has to be reachable from the internet. `dns-01` proves control of the
+zone, not of the host, so a server on a private address can hold a
+publicly-trusted certificate perfectly well. It is also the only challenge that
+can produce a **wildcard** — one `*.internal.example.com` covering every
+internal service is the usual way this is solved.
+
+### 1. Add the DNS provider
+
+Give it a label, choose the provider, paste the credential. For Cloudflare
+that's an API token with **Zone:DNS:Edit** on the zones you want certificates
+for, from the **Edit zone DNS** template under either Manage account → Account
+API tokens (preferred — it survives the creator leaving the account) or My
+Profile → API Tokens. The legacy global API key is
+deliberately not accepted — it authorises the entire account, and a certificate
+robot has no business holding that.
+
+Press **Test**. It lists the zones the token can reach. Do this before anything
+depends on it: a failed button costs nothing, a failed validation costs a
+rate-limited attempt.
+
+The credential is encrypted at rest and is never returned by the API. It can
+repoint your domain, so scope it as narrowly as the provider allows.
+
+Which providers appear in the dropdown is a property of the build — the list
+comes from the registry in `app/cert/dns/`, so it can never offer a backend
+that isn't compiled in. Adding one is a module and a registry entry.
+
+### 2. Register an account with the CA
+
+Choose `letsencrypt-staging` first. Add a contact email — that is where the CA
+warns you if renewal ever stops — and press **Register account**. pktCert
+generates an account key, registers it, and stores the key encrypted.
+
+Buypass, Google and ZeroSSL are also preset, and any other ACME directory URL
+works. The EAB fields are for CAs that require it; Let's Encrypt does not.
+
+**Start on staging and stay there until the whole path works.** Let's Encrypt's
+production limits count failures as well as successes, and being locked out is
+measured in hours to days. Staging certificates are untrusted — that is the
+point of them.
+
+### 3. Add the certificate
+
+Label it, list the names comma-separated, pick the account and DNS provider,
+and set how many days before expiry it should renew. Thirty suits a 90-day
+certificate; shorter-lived profiles need a tighter window.
+
+Press **Issue now**. pktCert publishes a `_acme-challenge` TXT record, waits
+for it to resolve, tells the CA to look, collects the certificate and removes
+the record again. The record is cleaned up even if the order fails.
+
+### 4. Go to production
+
+Register a second account against `letsencrypt`, then create the certificate
+against that account. Keep the staging one — it is where you test changes.
+
+### Afterwards
+
+Certificates land in the normal **Certificates** inventory with source
+`Public CA`, so expiry alerting, search and the renewal chain all apply. The
+private key is stored with them, encrypted, which is what lets pktCert renew
+these unattended — unlike ACME enrolment, where the client holds the key.
+
+Renewal runs on the same loop as internal renewal and uses the identical code
+path as **Replace now**, so an automatic renewal is not a separate mechanism
+with its own failure modes. A failed order backs off for an hour before
+retrying, because the relevant rate limits count failures.
+
+**Revoke** revokes at the CA and switches auto-renew off — a revoked
+certificate that quietly returns an hour later is not what anyone means by
+revoking it. **Delete** only stops managing the name; what was already issued
+stays valid and stays in the inventory, because it is deployed somewhere.
+
+**Installing a renewed certificate is still yours.** pktCert obtains and stores
+it; getting it onto whatever serves it is a separate step, exactly as it is for
+internal renewal.
+
 ## Alerting
 
 Fifteen condition types, each with its own settings — expiry windows,

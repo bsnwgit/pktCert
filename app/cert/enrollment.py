@@ -84,6 +84,54 @@ def _names_in_csr(csr) -> list[str]:
     return names
 
 
+# Baseline key strengths. The template's key_size governs only keys pktCert
+# generates itself; an enrolled CSR arrives with whatever key the device chose,
+# so without a floor here the CA will sign for a 512-bit RSA key it had no part
+# in creating — and a certificate is the CA vouching for that key.
+_MIN_RSA_BITS = 2048
+_MIN_EC_BITS = 256
+
+
+def _key_refusal(csr) -> Optional[str]:
+    """Why this CSR's public key is too weak to certify, or None if it's fine."""
+    from cryptography.hazmat.primitives.asymmetric import ec, ed448, ed25519, rsa
+
+    pub = csr.public_key()
+    if isinstance(pub, rsa.RSAPublicKey):
+        if pub.key_size < _MIN_RSA_BITS:
+            return f"the RSA key is {pub.key_size}-bit and the minimum is {_MIN_RSA_BITS}"
+        return None
+    if isinstance(pub, ec.EllipticCurvePublicKey):
+        if pub.key_size < _MIN_EC_BITS:
+            return f"the EC key is {pub.key_size}-bit and the minimum is {_MIN_EC_BITS}"
+        return None
+    # Ed25519 and Ed448 have no size to check — both are fixed at a safe
+    # strength. Anything else (DSA, or a type this version of `cryptography`
+    # doesn't model) is refused rather than assumed adequate.
+    if isinstance(pub, (ed25519.Ed25519PublicKey, ed448.Ed448PublicKey)):
+        return None
+    return f"its key type ({type(pub).__name__}) is not accepted for enrolment"
+
+
+def _name_allowed(name: str, suffix: str) -> bool:
+    """Whether one subject name falls inside a profile's permitted namespace.
+
+    Matched on a label boundary, not on the raw string. A plain `endswith`
+    lets a profile scoped to 'example.com' issue for 'notexample.com' — an
+    entirely different domain that merely shares the tail — which silently
+    widens every profile whose suffix was written without a leading dot, and
+    that is the natural way to write one.
+
+    A leading dot keeps its conventional meaning of "subdomains only", so
+    '.corp.example.com' still refuses the apex while 'corp.example.com'
+    permits it.
+    """
+    name = name.lower().rstrip(".")
+    if suffix.startswith("."):
+        return name.endswith(suffix)
+    return name == suffix or name.endswith("." + suffix)
+
+
 def check_csr_allowed(profile, csr) -> None:
     """Policy check before signing. Raises EnrollmentError if refused."""
     if not csr.is_signature_valid:
@@ -91,6 +139,10 @@ def check_csr_allowed(profile, csr) -> None:
         # have certified, so this signature is the only evidence the device
         # holds it.
         raise EnrollmentError("CSR signature is invalid — it was not signed by the key it presents")
+
+    weak = _key_refusal(csr)
+    if weak:
+        raise EnrollmentError(f"This CSR cannot be certified because {weak}", status=403)
 
     if profile["max_certs"] is not None and profile["issued_count"] >= profile["max_certs"]:
         raise EnrollmentError(
@@ -103,7 +155,7 @@ def check_csr_allowed(profile, csr) -> None:
         names = _names_in_csr(csr)
         if not names:
             raise EnrollmentError("CSR contains no subject name to check against this profile's policy", status=403)
-        bad = [n for n in names if not n.lower().endswith(suffix)]
+        bad = [n for n in names if not _name_allowed(n, suffix)]
         if bad:
             raise EnrollmentError(
                 f"This profile may only issue names ending in '{suffix}'; refused: {', '.join(bad)}",
@@ -131,7 +183,17 @@ async def issue_from_csr(db: aiosqlite.Connection, profile, csr_pem: str, protoc
     Goes through the same signing path as every other issuance — same
     extensions, same CRL distribution point, same AIA — so a device-enrolled
     certificate is indistinguishable from one issued through the UI.
+
+    Runs check_csr_allowed() itself rather than trusting the caller to have
+    done it. EST and SCEP both call it first and always have, but a protocol
+    that forgets gets no name constraint and no key floor and still signs
+    perfectly happily — the failure is silent, and the thing it silently
+    disables is the only containment a profile has. The check is pure and
+    cheap, so running it twice costs nothing and removes the footgun.
     """
+    csr = x509_utils.csr_from_pem(csr_pem)
+    check_csr_allowed(profile, csr)
+
     async with db.execute(
         "SELECT * FROM certificate_authorities WHERE id = ?", (profile["ca_id"],)
     ) as cur:
@@ -155,12 +217,28 @@ async def issue_from_csr(db: aiosqlite.Connection, profile, csr_pem: str, protoc
     crl_url = f"{base_url}/crl/{ca_row['id']}.crl"
     aia_url = f"{base_url}/aia/{ca_row['id']}.crt"
 
+    # Claim the certificate slot before signing, not after. check_csr_allowed()
+    # only reads issued_count, so two enrolments arriving together both see room
+    # under the cap and both go on to sign — a limit of two issues three. EST
+    # devices enrol one at a time and rarely expose it; anything that reconciles
+    # in parallel does so immediately, which is why this matters before ACME.
+    cur = await db.execute(
+        """UPDATE enrollment_profiles
+              SET issued_count = issued_count + 1, last_used_at = datetime('now')
+            WHERE id = ? AND (max_certs IS NULL OR issued_count < max_certs)""",
+        (profile["id"],),
+    )
+    if cur.rowcount != 1:
+        raise EnrollmentError(
+            f"This enrolment profile has reached its limit of {profile['max_certs']} certificates",
+            status=403,
+        )
+
     import asyncio
 
     def _sign() -> str:
         ca_cert = x509_utils.cert_from_pem(ca_row["cert_pem"])
         ca_key = x509_utils.key_from_pem(decrypt_str(ca_row["private_key_enc"]))
-        csr = x509_utils.csr_from_pem(csr_pem)
         cert = x509_utils.sign_certificate(
             csr, ca_cert, ca_key,
             validity_days=template_row["validity_days"],
@@ -171,33 +249,40 @@ async def issue_from_csr(db: aiosqlite.Connection, profile, csr_pem: str, protoc
         )
         return x509_utils.cert_to_pem(cert)
 
-    cert_pem = await asyncio.to_thread(_sign)
-    info = x509_utils.parse_certificate(cert_pem)
-
-    # The device generated and holds the private key; pktCert never sees it.
-    # That's the right shape for enrolment and is why there's no private_key_enc
-    # here — the inventory records what was issued, not a copy of the secret.
     try:
-        cur = await db.execute(
-            """INSERT INTO certificates
-               (common_name, san_json, issuer, subject, serial_number, fingerprint_sha256,
-                not_before, not_after, key_algorithm, key_size, signature_algorithm,
-                status, source, cert_pem, ca_id, template_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'enrolled', ?, ?, ?) RETURNING *""",
-            (info["common_name"], json.dumps(info["san"]), info["issuer"], info["subject"],
-             info["serial_number"], info["fingerprint_sha256"], info["not_before"], info["not_after"],
-             info["key_algorithm"], info["key_size"], info["signature_algorithm"],
-             cert_pem, ca_row["id"], template_row["id"]),
-        )
-        row = await cur.fetchone()
-    except aiosqlite.IntegrityError:
-        raise EnrollmentError("A certificate with this fingerprint already exists", status=409)
+        cert_pem = await asyncio.to_thread(_sign)
+        info = x509_utils.parse_certificate(cert_pem)
 
-    await db.execute(
-        """UPDATE enrollment_profiles SET issued_count = issued_count + 1,
-           last_used_at = datetime('now') WHERE id = ?""",
-        (profile["id"],),
-    )
+        # The device generated and holds the private key; pktCert never sees it.
+        # That's the right shape for enrolment and is why there's no private_key_enc
+        # here — the inventory records what was issued, not a copy of the secret.
+        try:
+            cur = await db.execute(
+                """INSERT INTO certificates
+                   (common_name, san_json, issuer, subject, serial_number, fingerprint_sha256,
+                    not_before, not_after, key_algorithm, key_size, signature_algorithm,
+                    status, source, cert_pem, ca_id, template_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 'enrolled', ?, ?, ?) RETURNING *""",
+                (info["common_name"], json.dumps(info["san"]), info["issuer"], info["subject"],
+                 info["serial_number"], info["fingerprint_sha256"], info["not_before"], info["not_after"],
+                 info["key_algorithm"], info["key_size"], info["signature_algorithm"],
+                 cert_pem, ca_row["id"], template_row["id"]),
+            )
+            row = await cur.fetchone()
+        except aiosqlite.IntegrityError:
+            raise EnrollmentError("A certificate with this fingerprint already exists", status=409)
+    except Exception:
+        # The slot was claimed before signing, so anything that fails between
+        # there and here has to give it back — otherwise a profile quietly loses
+        # capacity every time an enrolment errors, and a duplicate CSR retried
+        # a few times exhausts a cap that was never actually used.
+        await db.execute(
+            "UPDATE enrollment_profiles SET issued_count = issued_count - 1 WHERE id = ?",
+            (profile["id"],),
+        )
+        await db.commit()
+        raise
+
     await db.execute(
         "INSERT INTO cert_events (certificate_id, ca_id, event_type, message) VALUES (?, ?, 'issued', ?)",
         (row["id"], ca_row["id"],
