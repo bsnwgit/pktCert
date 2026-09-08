@@ -18,12 +18,11 @@ const STATUS_STYLES: Record<string, string> = {
   unknown: 'bg-sky-500/20 text-sky-400 border border-sky-500/40',
 }
 
-// Where a certificate came from, and whether that is somewhere we control.
-// 'issued' reads as "Internal" because that is the distinction that matters at
-// a glance — not how it was requested, but whose CA signed it and therefore
-// who can revoke or reissue it.
+// How a certificate got here, said plainly and in its own words. This column
+// carries no colour: the question a colour was really answering is Type's, and
+// it is asked and answered there instead.
 const SOURCE_LABELS: Record<string, string> = {
-  issued: 'Internal',
+  issued: 'Issued',
   enrolled: 'Enrolled',
   public: 'Public',
   external: 'External',
@@ -31,16 +30,30 @@ const SOURCE_LABELS: Record<string, string> = {
   ct: 'CT Search',
 }
 
-// Green means our CA signed it, so we can reissue or revoke it ourselves. Red
-// means the issuer is outside pktCert — a public CA or an uploaded file — so
-// replacing it depends on someone or something else. Neutral is for what was
-// only observed: discovery finding a certificate says nothing about control.
-const SOURCE_STYLES: Record<string, string> = {
+// Whether the certificate is ours to reissue. Issuing and enrolling both end at
+// a CA pktCert operates, so both read Internal however differently they were
+// requested. A public or uploaded certificate does not, and discovery finding
+// one says nothing either way — which is a third answer rather than a missing
+// one, and is why a scanned certificate is not quietly filed as external.
+const TYPE_LABELS: Record<string, string> = {
+  issued: 'Internal',
+  enrolled: 'Internal',
+  public: 'External',
+  external: 'External',
+  scan: 'Unknown',
+  ct: 'Unknown',
+}
+
+// Keyed by source rather than by the label above, because the shade draws a
+// distinction the word deliberately does not. Green is our own CA. Amber is a
+// public CA: entirely legitimate, and renewed on somebody else's schedule
+// rather than on demand. Red is the uploaded case, where pktCert has no way to
+// obtain a replacement at all — both are External, and only one of them is a
+// problem waiting to happen. Neutral is discovery, which observed a
+// certificate and learned nothing about who controls it.
+const TYPE_STYLES: Record<string, string> = {
   issued: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40',
   enrolled: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40',
-  // Amber rather than red: a public certificate is entirely legitimate, it just
-  // isn't ours to reissue on demand. Red stays for the uploaded case, where
-  // pktCert has no way to obtain a replacement at all.
   public: 'bg-amber-500/20 text-amber-400 border border-amber-500/40',
   external: 'bg-red-500/20 text-red-400 border border-red-500/40',
   scan: 'bg-slate-500/20 text-slate-300 border border-slate-500/40',
@@ -48,8 +61,9 @@ const SOURCE_STYLES: Record<string, string> = {
 }
 
 const sourceLabel = (source: string) => SOURCE_LABELS[source] ?? source
-const sourceStyle = (source: string) =>
-  SOURCE_STYLES[source] ?? 'bg-slate-500/20 text-slate-300 border border-slate-500/40'
+const typeLabel = (source: string) => TYPE_LABELS[source] ?? 'Unknown'
+const typeStyle = (source: string) =>
+  TYPE_STYLES[source] ?? 'bg-slate-500/20 text-slate-300 border border-slate-500/40'
 
 // RFC 5280 §5.3.1 reasonCode values, published in the CRL entry. Ordered by
 // how often they're actually the right answer, not by their numeric code.
@@ -462,9 +476,13 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm mb-4">
           <div>
             <span className="text-white">Source</span>
+            <p className="text-white">{sourceLabel(cert.source)}</p>
+          </div>
+          <div>
+            <span className="text-white">Type</span>
             <p>
-              <span className={`inline-block mt-0.5 text-xs px-2 py-0.5 rounded-full ${sourceStyle(cert.source)}`}>
-                {sourceLabel(cert.source)}
+              <span className={`inline-block mt-0.5 text-xs px-2 py-0.5 rounded-full ${typeStyle(cert.source)}`}>
+                {typeLabel(cert.source)}
               </span>
             </p>
           </div>
@@ -808,7 +826,7 @@ export default function Certificates() {
           <option value="">All sources</option>
           <option value="scan">Scanned</option>
           <option value="ct">CT Search</option>
-          <option value="issued">Internal</option>
+          <option value="issued">Issued</option>
           <option value="enrolled">Enrolled (EST / SCEP / ACME)</option>
           <option value="public">Public CA</option>
           <option value="external">External / Uploaded</option>
@@ -847,19 +865,21 @@ export default function Certificates() {
               <th className="px-4 py-3 text-left text-xs font-medium text-white">Common Name</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-white">Status</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-white">Source</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-white">Type</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-white">Issuer</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-white">Expires</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800/50">
-            {loading && <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-white">Loading…</td></tr>}
+            {loading && <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-white">Loading…</td></tr>}
             {!loading && paged.map(c => (
               <tr key={c.id} onClick={() => setSelected(c)} className="hover:bg-gray-800/30 transition-colors cursor-pointer">
                 <td className="px-4 py-3 font-mono text-white truncate max-w-xs">{c.common_name}</td>
                 <td className="px-4 py-3"><span className={`text-xs px-2 py-0.5 rounded-full capitalize ${STATUS_STYLES[c.status]}`}>{c.status}</span></td>
+                <td className="px-4 py-3 text-white text-xs">{sourceLabel(c.source)}</td>
                 <td className="px-4 py-3">
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${sourceStyle(c.source)}`}>
-                    {sourceLabel(c.source)}
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${typeStyle(c.source)}`}>
+                    {typeLabel(c.source)}
                   </span>
                 </td>
                 <td className="px-4 py-3 text-white text-xs truncate max-w-xs">{c.issuer}</td>
@@ -867,7 +887,7 @@ export default function Certificates() {
               </tr>
             ))}
             {!loading && paged.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-white">
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-white">
                 {certs.length === 0 ? 'No certificates yet — add a Scan Target or issue one.' : 'No certificates match this filter'}
               </td></tr>
             )}
