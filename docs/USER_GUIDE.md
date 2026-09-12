@@ -108,6 +108,19 @@ subject/issuer/SANs/serial/fingerprint, plus **View Certificate PEM** and
   *current* password first (a small confirmation dialog), and is logged
   for audit — this applies the same way to internally issued and
   externally uploaded certificates.
+- **Download Private Key (PKCS#1)** — the same key in the older traditional
+  format, `BEGIN RSA PRIVATE KEY` rather than `BEGIN PRIVATE KEY`. Reach for
+  it only when something refuses the normal download: a number of appliances,
+  QNAP's QTS among them, read only the traditional form and decline PKCS#8
+  without reporting an error, so the import simply never completes. The
+  filename carries `-pkcs1` so the two downloads stay tellable apart. A key
+  exported under a passphrase cannot be converted — pktCert does not hold the
+  passphrase — and says so rather than handing back a file that will not load.
+
+**Working through pktHub.** Downloads and reveals need a password even when
+pktHub has already signed you in, and the password checked is that of the
+local pktCert account with the same username. If no such account exists, the
+error says so; create one, or open pktCert directly and sign in.
 
 ## Scan Targets
 
