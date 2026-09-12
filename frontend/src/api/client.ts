@@ -44,7 +44,15 @@ function toQueryString(params?: Record<string, unknown>): string {
   return s ? `?${s}` : ''
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+/**
+ * `stepUp` marks an endpoint that takes a credential in its own body — the
+ * step-up re-auth downloads and reveals. A 401 from one of those means the
+ * password just typed was wrong, not that the session died, and routing it
+ * through the refresh-then-redirect path below throws the caller out of the
+ * app instead of showing them "Incorrect password". Same reasoning as the
+ * bypass on login() and autoLogin(), which predate this flag.
+ */
+async function request<T>(path: string, options: RequestInit = {}, stepUp = false): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
@@ -53,7 +61,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   const res = await fetch(`/api${path}`, { ...options, headers })
 
-  if (res.status === 401) {
+  if (res.status === 401 && !stepUp) {
     const refreshed = await tryRefresh()
     if (refreshed) {
       headers['Authorization'] = `Bearer ${_accessToken}`
@@ -62,7 +70,15 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       return retry.status === 204 ? (null as T) : retry.json()
     }
     clearToken()
-    window.location.href = '/login'
+    // Only the top window has a login page to go to. Inside an embed the
+    // identity arrives as a suite token on every proxied request, so there is
+    // nothing here to log in to — and navigating would reload the whole SPA
+    // inside the frame, sidebar and all, nested in the host's own chrome.
+    // Preserve the query string so a real top-level session expiry does not
+    // silently drop ?chromeless=1 either.
+    if (window.self === window.top) {
+      window.location.href = `/login${window.location.search}`
+    }
     throw new Error('Session expired')
   }
 
@@ -174,7 +190,7 @@ export const api = {
   downloadCertificate: (id: number, fmt: 'pem' | 'chain', password: string) =>
     request<{ pem: string }>(`/certificates/${id}/download`, {
       method: 'POST', body: JSON.stringify({ fmt, password }),
-    }),
+    }, true),
   // Returns a certificate normally, or {pending_approval, request_id} when
   // separation of duties is enabled — the issuance then happens on approval.
   issueCertificate: (body: { common_name: string; sans: string[]; ca_id: number; template_id: number; key_passphrase?: string; auto_renew?: boolean; auto_renew_days?: number; justification?: string }) =>
@@ -193,10 +209,13 @@ export const api = {
     }),
   // Step-up re-auth: current password required to decrypt a stored private
   // key or install passcode. Every successful call is audit-logged server-side.
-  revealCertificateSecret: (id: number, field: 'key' | 'passcode', password: string) =>
+  // keyFormat 'pkcs1' rewrites the key in the traditional format for appliances
+  // that will not read PKCS#8 — QNAP's QTS among them. Ignored for a passcode.
+  revealCertificateSecret: (id: number, field: 'key' | 'passcode', password: string,
+                            keyFormat: 'pkcs8' | 'pkcs1' = 'pkcs8') =>
     request<{ key?: string; passcode?: string }>(`/certificates/${id}/reveal-secret`, {
-      method: 'POST', body: JSON.stringify({ field, password }),
-    }),
+      method: 'POST', body: JSON.stringify({ field, password, key_format: keyFormat }),
+    }, true),
   uploadExternalCertificate: async (opts: { certFile: File; keyFile?: File; passphrase?: string; passcode?: string }): Promise<Certificate> => {
     const formData = new FormData()
     formData.append('cert_file', opts.certFile)

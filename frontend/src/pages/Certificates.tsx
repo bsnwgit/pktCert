@@ -376,13 +376,20 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
     },
   })
 
-  const downloadSecret = (field: 'key' | 'passcode') => setPending({
+  // keyFormat only means anything for the key. PKCS#8 is the default and the
+  // right answer nearly everywhere; PKCS#1 is for appliances that read only the
+  // traditional form and fail without saying so when handed PKCS#8 — the
+  // filename says which, so two downloads of the same key stay tellable apart.
+  const downloadSecret = (field: 'key' | 'passcode', keyFormat: 'pkcs8' | 'pkcs1' = 'pkcs8') => setPending({
     title: 'Confirm your password',
-    description: `Re-enter your current password to download the ${field === 'key' ? 'private key' : 'install passcode'}. This access is logged.`,
+    description: `Re-enter your current password to download the ${field === 'key' ? `private key${keyFormat === 'pkcs1' ? ' in PKCS#1 format' : ''}` : 'install passcode'}. This access is logged.`,
     run: async password => {
-      const res = await api.revealCertificateSecret(cert.id, field, password)
+      const res = await api.revealCertificateSecret(cert.id, field, password, keyFormat)
       const value = (field === 'key' ? res.key : res.passcode) ?? ''
-      downloadFile(field === 'key' ? `${filenameBase}-key.pem` : `${filenameBase}-passcode.txt`, value, field === 'key' ? 'application/x-pem-file' : 'text/plain')
+      const name = field === 'key'
+        ? `${filenameBase}-key${keyFormat === 'pkcs1' ? '-pkcs1' : ''}.pem`
+        : `${filenameBase}-passcode.txt`
+      downloadFile(name, value, field === 'key' ? 'application/x-pem-file' : 'text/plain')
     },
   })
 
@@ -522,6 +529,9 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
             <>
               <button onClick={() => revealSecret('key')} className="text-xs bg-gray-800 hover:bg-gray-700 text-amber-300 border border-amber-800/60 rounded px-3 py-1.5 transition-colors">Reveal Private Key</button>
               <button onClick={() => downloadSecret('key')} className="text-xs bg-gray-800 hover:bg-gray-700 text-amber-300 border border-amber-800/60 rounded px-3 py-1.5 transition-colors">Download Private Key</button>
+              <button onClick={() => downloadSecret('key', 'pkcs1')}
+                title="Traditional 'BEGIN RSA PRIVATE KEY' format. Some appliances — QNAP QTS among them — will not read PKCS#8 and fail the import without reporting an error."
+                className="text-xs bg-gray-800 hover:bg-gray-700 text-amber-300 border border-amber-800/60 rounded px-3 py-1.5 transition-colors">Download Private Key (PKCS#1)</button>
             </>
           )}
           {isAdmin && cert.has_passcode && (

@@ -81,6 +81,28 @@ def key_to_pem(key, passphrase: Optional[str] = None) -> str:
     ).decode()
 
 
+def key_pem_to_pkcs1(pem: str) -> str:
+    """Re-serialise an unencrypted private key PEM in the traditional format.
+
+    PKCS#8 — "BEGIN PRIVATE KEY" — is what key_to_pem writes and what anything
+    current expects. A fair number of appliances parse only the older
+    traditional form, "BEGIN RSA PRIVATE KEY" for RSA or "BEGIN EC PRIVATE KEY"
+    for EC, and fail on PKCS#8 without saying so: QNAP's QTS sits on "Applying"
+    and never finishes, which looks like a broken certificate rather than a
+    format it declined to read.
+
+    Only an unencrypted PEM converts here. pktCert does not keep the passphrase
+    for a key exported with one, so there is nothing to decrypt it with — the
+    caller is told that rather than handed a file that will not load.
+    """
+    key = serialization.load_pem_private_key(pem.encode(), password=None)
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+
 def key_from_pem(pem: str, passphrase: Optional[str] = None):
     """Load a PKCS#8/PKCS#1 private key PEM. `passphrase` is required for a
     key that was exported encrypted — which is how any properly stored CA key

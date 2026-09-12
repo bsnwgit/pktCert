@@ -503,6 +503,10 @@ Where no role is set to *Read and write*, the write operations are withheld from
 
 ## Troubleshooting
 
+The most common ones. For anything else — discovery, approvals, ACME/SCEP/EST,
+CRL and AIA, offline roots, `credential_key` recovery — see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
 | Symptom | Check |
 |---|---|
 | Service won't start | `journalctl -u pktcert -n 50`; check `config.yaml` and secret keys |

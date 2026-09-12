@@ -220,6 +220,15 @@ def _decode_setting(raw):
 _LOCK_ALLOW_PREFIXES = (
     "/api/health", "/api/suite/", "/api/auth/", "/api/resonance/",
     "/api/widgets/", "/scep", "/.well-known/", "/assets/", "/acme",
+    # /aia and /crl are named in the certificates this app issues, and whatever
+    # follows those URLs is a TLS stack building a chain or checking revocation
+    # — never a person. Redirecting them breaks the certificate rather than
+    # inconveniencing anyone, and does it silently: a QNAP importing a cert
+    # whose AIA answered with a redirect to HTML sits on "Applying" forever and
+    # reports nothing. The navigation test below would spare them anyway; they
+    # are listed because a certificate that has already been issued cannot be
+    # re-pointed if that test is ever wrong.
+    "/aia", "/crl",
 )
 
 # How long a lock outlives pktHub's last contact. pktHub polls health well
@@ -227,6 +236,26 @@ _LOCK_ALLOW_PREFIXES = (
 # stop — at which point the lock releases rather than stranding this app behind
 # a redirect to an address that no longer answers.
 _LOCK_HEARTBEAT_MAX_AGE = 300  # seconds
+
+
+def _is_document_navigation(request: Request) -> bool:
+    """Whether this is a browser loading a page, rather than script fetching data.
+
+    The lock exists to steer *people* at pktHub. A 302 answering an API call
+    goes somewhere that serves HTML, fetch() follows it without being asked,
+    and the caller gets a parse error instead of its data — which is how a
+    signed-in admin ends up unable to log in, the SPA's own /api/users/me
+    having been redirected out from under it.
+
+    Sec-Fetch-Mode is set by the browser and cannot be forged by page script,
+    so it is the signal where present. The Accept fallback covers clients that
+    predate it; anything asking for JSON, or a machine client sending */*,
+    reads as not-a-navigation and is served rather than bounced.
+    """
+    mode = request.headers.get("sec-fetch-mode", "")
+    if mode:
+        return mode == "navigate"
+    return "text/html" in request.headers.get("accept", "")
 
 
 @app.middleware("http")
@@ -301,7 +330,12 @@ async def _direct_access_lock(request: Request, call_next):
     except Exception:
         logging.getLogger("pktcert.main").exception("direct-access lock check failed")
 
-    if redirect_to:
+    # The navigation test is deliberately here and not an early return further
+    # up: the branch above is also what refreshes lock_heartbeat_at, and almost
+    # everything pktHub proxies is XHR. Short-circuiting before the database
+    # block would starve the heartbeat and expire the lock after five minutes
+    # of perfectly normal traffic.
+    if redirect_to and _is_document_navigation(request):
         return RedirectResponse(url=redirect_to, status_code=302)
     return await call_next(request)
 

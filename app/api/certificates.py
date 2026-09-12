@@ -110,6 +110,55 @@ class DownloadRequest(BaseModel):
     password: str
 
 
+async def _step_up_row(db: aiosqlite.Connection, user: dict):
+    """The local account whose password authorises a step-up, or None.
+
+    A suite-proxied caller is pktHub presenting somebody it has already
+    authenticated, under a synthetic identity with id 0 and no row of its own —
+    so looking the password up by id finds nothing and every step-up fails,
+    whatever was typed. Match on the username pktHub sends instead, and the
+    check means exactly what it means on a direct login: a real password,
+    against a real active account, logged the same way.
+
+    This is the one thing that must not be relaxed to make managed mode work.
+    Waving a suite token through without a password would remove step-up from
+    private key material in a certificate authority, which is the property
+    tests/test_export_stepup.py exists to hold.
+    """
+    if user.get("_via_suite"):
+        async with db.execute(
+            "SELECT hashed_password FROM users WHERE username = ? AND is_active = 1",
+            (user.get("username") or "",),
+        ) as cur:
+            return await cur.fetchone()
+    async with db.execute(
+        "SELECT hashed_password FROM users WHERE id = ?", (user["id"],)
+    ) as cur:
+        return await cur.fetchone()
+
+
+def _check_step_up(user: dict, row, password: str) -> None:
+    """Reject a bad password, and say plainly when there is no account to check.
+
+    The two are worth telling apart. A hub user with no pktCert account of the
+    same name can retype a correct password forever and be told it is wrong;
+    naming the cause is what turns that into something an admin can fix. The
+    caller is already authenticated by this point, so this discloses nothing to
+    anyone who was not already inside.
+    """
+    if not row or not row["hashed_password"]:
+        if user.get("_via_suite"):
+            raise HTTPException(
+                401,
+                f"No pktCert account named '{user.get('username')}' to check a password against. "
+                "Downloads and reveals need a local pktCert account of the same name as the "
+                "pktHub user — create one, or open pktCert directly and sign in.",
+            )
+        raise HTTPException(401, "Incorrect password")
+    if not verify_password(password, row["hashed_password"]):
+        raise HTTPException(401, "Incorrect password")
+
+
 @router.post("/{cert_id}/download")
 async def download_certificate(
     cert_id: int, body: DownloadRequest, user: AdminUser, db: aiosqlite.Connection = Depends(get_db)
@@ -121,10 +170,7 @@ async def download_certificate(
     if body.fmt not in ("pem", "chain"):
         raise HTTPException(400, "fmt must be 'pem' or 'chain' — use POST /{id}/reveal-secret for the private key or passcode")
 
-    async with db.execute("SELECT hashed_password FROM users WHERE id = ?", (user["id"],)) as cur:
-        user_row = await cur.fetchone()
-    if not user_row or not verify_password(body.password, user_row["hashed_password"]):
-        raise HTTPException(401, "Incorrect password")
+    _check_step_up(user, await _step_up_row(db, user), body.password)
 
     async with db.execute("SELECT * FROM certificates WHERE id = ?", (cert_id,)) as cur:
         row = await cur.fetchone()
@@ -145,6 +191,10 @@ async def download_certificate(
 class RevealSecretRequest(BaseModel):
     field: str  # "key" | "passcode"
     password: str
+    # pkcs8 is the default because it is what everything current reads. pkcs1
+    # exists for appliances that only parse the traditional form — see
+    # x509_utils.key_pem_to_pkcs1. Ignored for a passcode, which is not a key.
+    key_format: str = "pkcs8"  # pkcs8 | pkcs1
 
 
 @router.post("/{cert_id}/reveal-secret")
@@ -152,17 +202,16 @@ async def reveal_secret(cert_id: int, body: RevealSecretRequest, user: AdminUser
     """Step-up re-auth: the caller must supply their *current* password
     again (verified against the users table) before a private key or
     install passcode is decrypted and returned. Every successful reveal is
-    logged to cert_events so access to these secrets is auditable. Suite-
-    proxied callers (X-Suite-Token, synthetic user id 0) have no local
-    password and will always be rejected here — they must log in as a real
-    local admin to reveal a secret."""
+    logged to cert_events so access to these secrets is auditable. A suite-
+    proxied caller is checked against the local account matching the username
+    pktHub sends — see _step_up_row — so this works in managed mode without the
+    password ever becoming optional."""
     if body.field not in ("key", "passcode"):
         raise HTTPException(400, "field must be 'key' or 'passcode'")
+    if body.key_format not in ("pkcs8", "pkcs1"):
+        raise HTTPException(400, "key_format must be 'pkcs8' or 'pkcs1'")
 
-    async with db.execute("SELECT hashed_password FROM users WHERE id = ?", (user["id"],)) as cur:
-        user_row = await cur.fetchone()
-    if not user_row or not verify_password(body.password, user_row["hashed_password"]):
-        raise HTTPException(401, "Incorrect password")
+    _check_step_up(user, await _step_up_row(db, user), body.password)
 
     async with db.execute(
         "SELECT common_name, private_key_enc, passcode_enc FROM certificates WHERE id = ?", (cert_id,)
@@ -176,9 +225,27 @@ async def reveal_secret(cert_id: int, body: RevealSecretRequest, user: AdminUser
         raise HTTPException(404, f"No {body.field} stored for this certificate")
 
     value = decrypt_str(enc)
+
+    if body.field == "key" and body.key_format == "pkcs1":
+        # A key exported under a passphrase stays as it is: pktCert never kept
+        # that passphrase, so there is nothing here to open it with. Saying so
+        # beats handing back a PKCS#8 file the appliance will refuse in silence.
+        if "ENCRYPTED" in value:
+            raise HTTPException(
+                400,
+                "This key is stored passphrase-protected, so pktCert cannot rewrite it as "
+                "PKCS#1 — it does not hold the passphrase. Download it as PKCS#8 and convert "
+                "it yourself with: openssl rsa -in key.pem -out key-pkcs1.pem",
+            )
+        try:
+            value = x509_utils.key_pem_to_pkcs1(value)
+        except Exception as exc:
+            raise HTTPException(400, f"Could not rewrite this key as PKCS#1: {exc}") from exc
+
     await db.execute(
         "INSERT INTO cert_events (certificate_id, event_type, message) VALUES (?, 'secret_accessed', ?)",
-        (cert_id, f"{'Private key' if body.field == 'key' else 'Passcode'} revealed by {user['username']}"),
+        (cert_id, f"{'Private key' if body.field == 'key' else 'Passcode'} revealed by {user['username']}"
+                  + (" (PKCS#1)" if body.field == "key" and body.key_format == "pkcs1" else "")),
     )
     await db.commit()
     return {body.field: value}
