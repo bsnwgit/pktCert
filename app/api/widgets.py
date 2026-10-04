@@ -65,6 +65,12 @@ MANIFEST = [
         "default_w": 480, "default_h": 280, "min_w": 280, "min_h": 170,
     },
     {
+        "id": "certs_by_status", "title": "Certificates by Status", "category": "Overview",
+        "description": "Valid, expiring, expired and revoked certificates as a share of the inventory",
+        "view_path": "/api/widgets/certs_by_status",
+        "default_w": 440, "default_h": 260, "min_w": 260, "min_h": 160,
+    },
+    {
         "id": "certs_by_source", "title": "Certificates by Source", "category": "Overview",
         "description": "Inventory split across scan, CT log and locally issued",
         "view_path": "/api/widgets/certs_by_source",
@@ -305,6 +311,34 @@ async def widget_cert_summary():
     )
     body = f'<div class="tile-row">{tiles}</div>'
     return HTMLResponse(_page("Certificate Summary", body))
+
+
+# ── Certificates by Status widget (chart) ──────────────────────────────────────
+@router.get("/certs_by_status", response_class=HTMLResponse, include_in_schema=False)
+async def widget_certs_by_status():
+    counts = {"valid": 0, "expiring": 0, "expired": 0, "revoked": 0}
+    try:
+        async with aiosqlite.connect(_DB) as db:
+            async with db.execute("SELECT status, COUNT(*) FROM certificates GROUP BY status") as cur:
+                for status, n in await cur.fetchall():
+                    if status in counts:
+                        counts[status] = n
+    except Exception as exc:
+        _note_err(exc)
+    total = sum(counts.values())
+    if not total:
+        return HTMLResponse(_page("Certificates by Status", _empty('No certificates in the inventory')))
+    # Same scale as the Dashboard's Inventory by Status: each bar is a share of
+    # the whole inventory, not of the largest status.
+    colors = {"valid": "#10b981", "expiring": "#f59e0b", "expired": "#ef4444", "revoked": "#6b7280"}
+    body = "".join(
+        f'<div class="bar-row"><div class="bar-lbl">{label}</div>'
+        f'<div class="bar-trk"><div class="bar-fill" style="width:{n / total * 100:.1f}%;background:{colors[key]}"></div></div>'
+        f'<div class="bar-val">{n}</div></div>'
+        for key, label, n in [("valid", "Valid", counts["valid"]), ("expiring", "Expiring", counts["expiring"]),
+                              ("expired", "Expired", counts["expired"]), ("revoked", "Revoked", counts["revoked"])]
+    )
+    return HTMLResponse(_page("Certificates by Status", body))
 
 
 # ── Expiring Certificates widget ───────────────────────────────────────────────

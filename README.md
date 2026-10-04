@@ -455,9 +455,12 @@ automatically wherever CT search runs.
 
 ## pktHub NOC Widgets
 
-pktCert exposes three widgets for pktHub's NOC Builder dashboards:
-Certificate Summary (status tile counts), Expiring Certificates (soonest
-first), and Active Alerts — see `GET /api/widgets/manifest`.
+pktCert publishes 16 widgets to pktHub's NOC Builder — summaries, expiry,
+issuers and key strength, CA status, scan targets and alerts; the full list is
+`GET /api/widgets/manifest`. **Certificates by Status** draws the Dashboard's
+Inventory by Status bars (valid, expiring, expired and revoked, each as a share
+of the whole inventory); **Certificate Summary** carries the same counts as
+tiles.
 
 ## Backup & Restore
 
