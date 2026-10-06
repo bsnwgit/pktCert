@@ -1287,6 +1287,13 @@ function UsersTab() {
     } catch (e: any) { setError(e.message) }
   }
 
+  const unlock = async (u: User) => {
+    try {
+      await api.unlockUser(u.id)
+      load()
+    } catch (e: any) { setError(e.message) }
+  }
+
   const makeDefaultAdmin = async (u: User) => {
     try {
       await api.setDefaultAdmin(u.id)
@@ -1302,6 +1309,7 @@ function UsersTab() {
           <p>Three roles: <span className="text-gray-300 font-medium">admin</span> (full access, including this Users tab, CA/PKI issuance, and revocation), <span className="text-gray-300 font-medium">analyst</span> (can manage Scan Targets and ack/resolve alerts), and <span className="text-gray-300 font-medium">viewer</span> (read-only).</p>
           <p>This tab only manages <span className="text-gray-300 font-medium">local accounts</span> — SAML SSO users are auto-provisioned on first login.</p>
           <p><span className="text-gray-300 font-medium">Deactivate</span> blocks login immediately without deleting the account or its history — prefer it over Delete for someone who's just leaving temporarily, since Delete is permanent.</p>
+          <p>After repeated failed logins an account is <span className="text-gray-300 font-medium">locked</span> for 30 minutes; if it then fails the same number of times again, it stays locked until you click the unlock icon here. The number of failures allowed is set on the Auth tab. If the only admin is locked, run <span className="text-gray-300 font-medium">scripts/unlock_user.py</span> on the server.</p>
           <p>The <span className="text-yellow-400">★</span> marks the <span className="text-gray-300 font-medium">default admin</span> — when every auth method in the Auth tab is disabled, the app skips the login page entirely and signs everyone in as this account. Click the star on any active admin to reassign it.</p>
         </HelpButton>
       </div>
@@ -1413,6 +1421,12 @@ function UsersTab() {
                     <span className={`px-2 py-0.5 rounded text-xs font-medium ${badge(u.is_active)}`}>
                       {u.is_active ? 'Active' : 'Disabled'}
                     </span>
+                    {u.is_locked && (
+                      <span className="ml-2 px-2 py-0.5 rounded text-xs font-medium bg-red-900/40 text-red-400 border border-red-700/40"
+                        title={u.lock_permanent ? 'Locked until an admin unlocks it' : `Locked until ${u.locked_until} UTC`}>
+                        {u.lock_permanent ? 'Locked' : 'Locked 30 min'}
+                      </span>
+                    )}
                   </td>
                   <td className="px-5 py-3.5 text-white text-xs">
                     {u.last_login
@@ -1421,6 +1435,14 @@ function UsersTab() {
                   </td>
                   <td className="px-5 py-3.5">
                     <div className="flex items-center justify-end gap-1">
+                      {u.is_locked && (
+                        <button onClick={() => unlock(u)} title="Unlock account"
+                          className="p-1.5 text-red-400 hover:text-green-400 hover:bg-green-900/20 rounded transition-colors">
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 119 0v3.75M3.75 21.75h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H3.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/>
+                          </svg>
+                        </button>
+                      )}
                       {u.auth_provider !== 'saml' && (
                         <button onClick={() => setResetPw(u)} title="Reset Password"
                           className="p-1.5 text-white hover:text-purple-400 hover:bg-purple-900/20 rounded transition-colors">
@@ -1659,6 +1681,7 @@ export default function Settings() {
   }
   const authSave = useSave([
     'auth_local_enabled', 'session_timeout_minutes',
+    'login_max_failed_attempts', 'address_max_failed_attempts', 'address_failure_window_minutes', 'address_block_minutes',
     'okta_saml_enabled', 'okta_saml_idp_entity_id', 'okta_saml_idp_sso_url',
     'okta_saml_idp_cert', 'okta_saml_sp_entity_id', 'okta_saml_sp_cert', 'okta_saml_sp_key',
   ], settings, load)
@@ -1929,6 +1952,30 @@ export default function Settings() {
                 <Field label="Session timeout">
                   <div className="flex items-center gap-3">
                     <NumberInput value={num('session_timeout_minutes', 480)} onChange={v => set('session_timeout_minutes', v)} min={5} max={10080} />
+                    <span className="text-sm text-white">minutes</span>
+                  </div>
+                </Field>
+                <Field label="Failed logins before lockout" hint="Consecutive failures that lock an account: 30 minutes the first time, until an admin unlocks it the second time. Applies to local accounts">
+                  <div className="flex items-center gap-3">
+                    <NumberInput value={num('login_max_failed_attempts', 3)} onChange={v => set('login_max_failed_attempts', v)} min={1} max={100} />
+                    <span className="text-sm text-white">attempts</span>
+                  </div>
+                </Field>
+                <Field label="Failed sign-ins per address" hint="Failed sign-ins from one address, whatever username was tried, before that address is blocked. Behind a proxy on another host every user shares the proxy's address, so raise this there">
+                  <div className="flex items-center gap-3">
+                    <NumberInput value={num('address_max_failed_attempts', 10)} onChange={v => set('address_max_failed_attempts', v)} min={1} max={10000} />
+                    <span className="text-sm text-white">attempts</span>
+                  </div>
+                </Field>
+                <Field label="Counted over" hint="How long a failed sign-in counts toward the address limit. A successful sign-in does not reset it">
+                  <div className="flex items-center gap-3">
+                    <NumberInput value={num('address_failure_window_minutes', 15)} onChange={v => set('address_failure_window_minutes', v)} min={1} max={1440} />
+                    <span className="text-sm text-white">minutes</span>
+                  </div>
+                </Field>
+                <Field label="Address blocked for" hint="How long an address that reached the limit is refused, even with correct credentials">
+                  <div className="flex items-center gap-3">
+                    <NumberInput value={num('address_block_minutes', 15)} onChange={v => set('address_block_minutes', v)} min={1} max={1440} />
                     <span className="text-sm text-white">minutes</span>
                   </div>
                 </Field>
