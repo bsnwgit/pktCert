@@ -1,6 +1,10 @@
 # pktCert
 
 <p align="center">
+  <img src="docs/screenshots/social-preview.png" alt="pktCert — Find, track and issue every TLS certificate" width="900">
+</p>
+
+<p align="center">
   <img src="lockup-256h.png" alt="pktCert" height="64">
 </p>
 
@@ -30,6 +34,14 @@ suite) with a short in-context explainer — no separate user manual.
 systemd service on an internal Linux host.
 
 ---
+
+## Why pktCert
+
+- **Find what you did not know you had.** Discovers certificates with active port scans and Certificate Transparency log search.
+- **Never be surprised by an expiry.** Tracks expiration and alerts per rule through in-app, email, Slack, PagerDuty and webhook channels.
+- **An internal CA when you need one.** Generate or import root and intermediate CAs, define issuance templates, issue and revoke certificates, and serve CRLs.
+- **Part of a suite.** One of ten self-hosted pkt apps that share one architecture (FastAPI + React), `admin` / `analyst` / `viewer` roles and a suite token. pktCert installs and runs standalone, so take only what you need.
+- **Self-hosted, source-available.** A SQLite database and an installer script. Sign in with local accounts or SAML 2.0 SSO. Free for noncommercial use under the [PolyForm Noncommercial License](LICENSE).
 
 ## Documentation
 
