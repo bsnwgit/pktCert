@@ -1,0 +1,79 @@
+# Publishes a release when VERSION is raised on main, so a merged version bump
+# is what installs see — nobody has to cut the release by hand.
+#
+# Installs check GitHub releases for a newer Major.Minor.Patch than the one
+# they run (app/self_update.py), and apply the pktcert-<tag>.tar.gz attached
+# to it. A release created with the workflow's own token doesn't start the
+# "Release package" workflow (GitHub doesn't chain workflows from that token),
+# so the package is built and attached here, the same way release.yml does.
+#
+# The release tag is v<Major.Minor.Patch>. A change that only moves the
+# codename or hotfix number keeps the same tag and publishes nothing. Merging
+# this file also runs it, so a VERSION already on main with no release gets one.
+name: Release on version bump
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - VERSION
+      - .github/workflows/release-on-version.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the tag
+        id: tag
+        run: |
+          tag="v$(cut -d. -f1-3 VERSION | tr -d '[:space:]')"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $tag already exists — nothing to publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.tag.outputs.exists == 'false'
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        if: steps.tag.outputs.exists == 'false'
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Package release asset
+        if: steps.tag.outputs.exists == 'false'
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          stage="pktcert-${tag}"
+          mkdir -p "$stage"
+          [ -d app ] && cp -r app "$stage/"
+          [ -d migrations ] && cp -r migrations "$stage/"
+          [ -d docs ] && cp -r docs "$stage/"
+          cp VERSION requirements.txt "$stage/"
+          mkdir -p "$stage/frontend"
+          cp -r frontend/dist "$stage/frontend/dist"
+          tar -czf "${stage}.tar.gz" "$stage"
+
+      - name: Publish the release
+        if: steps.tag.outputs.exists == 'false'
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          gh release create "$tag" "pktcert-${tag}.tar.gz" \
+            --target "$GITHUB_SHA" --title "pktCert ${tag}" --generate-notes

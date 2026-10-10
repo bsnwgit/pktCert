@@ -8,6 +8,7 @@ import Templates from './Templates'
 import Enrollment from './Enrollment'
 import PublicCerts from './PublicCerts'
 import { BrandLockup } from '../components/Brand'
+import UpdatePanel from '../components/UpdatePanel'
 
 // -- Generic helpers -------------------------------------------------------------
 type SettingsMap = Record<string, unknown>
@@ -2570,6 +2571,8 @@ export default function Settings() {
       {/* System — version/about info */}
       {tab === 'system' && (
         <div className="space-y-4">
+          <UpdatePanel isAdmin={isAdmin} />
+
           <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
             <div className="px-6 py-4 border-b border-gray-800 grid grid-cols-3 gap-4 items-center">
               <h2 className="text-sm font-semibold text-white">System: {systemInfo?.app_name ?? 'pktCert'}</h2>

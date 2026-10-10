@@ -536,6 +536,35 @@ CRL and AIA, offline roots, `credential_key` recovery — see
 
 ## Upgrading
 
+### Updating from Settings
+
+**Settings → System → Updates** checks the pktCert repository on GitHub for a newer
+release and can install it for you.
+
+- **Check for updates** compares the installed version with the latest GitHub
+  release (it also checks by itself every hour). When a newer one exists, the
+  panel shows **Update to vX.Y.Z**.
+- **Update** downloads the release package, replaces the application files, and
+  restarts the service. The page reloads when pktCert is back, usually within a few
+  seconds. Your `config.yaml`, database, `venv/`, logs and backups are never
+  touched.
+- **Update mode** is *Manual* by default: nothing installs until an admin presses
+  the button. *Automatic* installs a new release by itself, but only inside the
+  update window you set (the window may cross midnight).
+- **GitHub token** is only needed when the repository is private. It needs read
+  access to the repository's contents, is stored encrypted, and is never shown
+  again after you save it.
+- An install that is a git checkout (it has a `.git` directory) can check for
+  updates but will not apply them — update those with `git pull` and restart.
+- Restart relies on the service manager: the unit must restart the service after
+  it exits (`Restart=on-failure` or `Restart=always`, which is how `install.sh`
+  sets it up).
+- A package is published when the `VERSION` file is raised on `main`. The
+  release is tagged `v<Major>.<Minor>.<Patch>`; a change that only moves the
+  codename or hotfix number does not publish a new release.
+
+### Updating by hand
+
 Pull the latest code, rebuild the frontend if you build manually, then
 restart the service. Migrations run automatically on startup.
 
