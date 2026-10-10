@@ -161,10 +161,16 @@ async def lifespan(app: FastAPI):
     app.state.renewal_engine = renewal_engine
     log.info("Certificate renewal engine started")
 
+    import asyncio
+    from app.self_update import run_forever as self_update_run_forever
+    self_update_task = asyncio.create_task(self_update_run_forever())
+    app.state.self_update_task = self_update_task
+
     yield
 
     # -- Shutdown ----------------------------------------------------------------
     log.info("pktCert shutting down")
+    self_update_task.cancel()
     await renewal_engine.stop()
     await scan_engine.stop()
     await alert_engine.stop()

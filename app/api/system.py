@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import shutil
@@ -21,12 +22,13 @@ from pydantic import BaseModel
 import aiosqlite
 
 from app.config import get_settings
-from app.dependencies import AdminUser, CurrentUser
+from app.dependencies import AdminUser, CurrentUser, DbDep
 from app.backup import run_backup_sync, list_backups_sync, _read_backup_settings_sync
 from app.cert import x509_utils
 from app.version import get_version
 
 router = APIRouter()
+log = logging.getLogger("pktcert.system")
 
 
 async def _delayed_restart(delay: float = 1.5) -> None:
@@ -567,3 +569,57 @@ async def log_forward_reload(_: AdminUser):
         app_name=str(fwd.get("log_forward_app_name") or "pktcert"),
     )
     return get_forward_stats()
+
+
+# -- Self-update ---------------------------------------------------------------
+# Checks the GitHub releases for a newer version and applies it in place — see
+# app/self_update.py. Status is readable by any signed-in user (the Settings →
+# System page shows it); checking, configuring and applying are admin-only.
+
+class UpdateConfigBody(BaseModel):
+    mode: Optional[str] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
+    github_token: Optional[str] = None  # None = leave alone, "" = clear
+
+
+@router.get("/update-status")
+async def get_update_status(user: CurrentUser, db: DbDep) -> dict:
+    from app import self_update
+    return await self_update.status(db)
+
+
+@router.post("/update-check")
+async def force_update_check(user: AdminUser, db: DbDep) -> dict:
+    from app import self_update
+    return await self_update.check_latest(db)
+
+
+@router.put("/update-config")
+async def save_update_config(body: UpdateConfigBody, user: AdminUser, db: DbDep) -> dict:
+    from app import self_update
+    try:
+        return await self_update.save_config(
+            db, mode=body.mode, window_start=body.window_start,
+            window_end=body.window_end, github_token=body.github_token,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@router.post("/update-apply")
+async def apply_update_now(user: AdminUser, db: DbDep) -> dict:
+    """Download the newest release, swap it in, and exit shortly after
+    answering so systemd starts the new code. The delay is what lets this
+    response reach the browser before the process goes away."""
+    from app import self_update
+    try:
+        result = await self_update.apply_now(db)
+    except self_update.UpdateRefused as exc:
+        raise HTTPException(409, str(exc))
+    except Exception as exc:
+        log.exception("Update now failed")
+        raise HTTPException(502, f"Update failed: {exc}")
+    log.info("Self-update applied by %s: %s", user["username"], result.get("applied"))
+    self_update.restart_soon()
+    return {**result, "restarting": True}
