@@ -194,10 +194,20 @@ async def check_latest(db: aiosqlite.Connection) -> dict:
     error = ""
     release: Optional[dict] = None
     token = await _github_token(db)
+    # Conditional request: GitHub answers 304 for an unchanged release and a
+    # 304 does not count against the rate limit, so every page load can ask
+    # without the ten apps sharing one IP exhausting the anonymous 60/hour.
+    etag = await _get_setting(db, "self_update_etag", "")
+    cached = await _get_setting(db, "self_update_latest_release", None)
+    headers = _headers(token)
+    if etag and cached:
+        headers["If-None-Match"] = etag
     try:
         async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-            resp = await client.get(_RELEASES_URL, headers=_headers(token))
-        if resp.status_code == 404:
+            resp = await client.get(_RELEASES_URL, headers=headers)
+        if resp.status_code == 304 and cached:
+            release = cached
+        elif resp.status_code == 404:
             error = (
                 "No releases published yet" if token
                 else "No releases published yet, or the repository is private — set a GitHub token"
@@ -207,6 +217,12 @@ async def check_latest(db: aiosqlite.Connection) -> dict:
         else:
             resp.raise_for_status()
             release = resp.json()
+            await _set_setting(db, "self_update_etag", resp.headers.get("etag", ""))
+            await _set_setting(db, "self_update_latest_release", {
+                "tag_name": release.get("tag_name", ""),
+                "html_url": release.get("html_url", ""),
+                "assets": release.get("assets", []),
+            })
     except httpx.HTTPError as exc:
         error = f"Couldn't reach GitHub: {exc}"
 
