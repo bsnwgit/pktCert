@@ -29,7 +29,7 @@ export default function UpdateBanner() {
   return (
     <div role="status" className="flex-shrink-0 flex items-center gap-3 border-b border-gray-800 bg-gray-900 px-4 py-1.5 text-xs text-yellow-400">
       <span>Update available: {st.latest_tag} (you have v{st.current_version})</span>
-      <Link to="/settings" className="ml-auto text-blue-400 hover:text-blue-300 underline">View</Link>
+      <Link to="/settings?tab=system" className="ml-auto text-blue-400 hover:text-blue-300 underline">View</Link>
     </div>
   )
 }
