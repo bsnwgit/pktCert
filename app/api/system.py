@@ -583,32 +583,29 @@ class UpdateConfigBody(BaseModel):
     github_token: Optional[str] = None  # None = leave alone, "" = clear
 
 
-# A page load re-checks GitHub, but not more than once per this many seconds —
-# the status route is open to every signed-in user, so it must not be a way to
-# hammer the GitHub API.
-_REFRESH_MIN_AGE_SECONDS = 300
-
-
-def _check_is_stale(checked_at: str | None) -> bool:
-    if not checked_at:
-        return True
-    from datetime import datetime, timezone
-    try:
-        then = datetime.fromisoformat(checked_at)
-    except ValueError:
-        return True
-    return (datetime.now(timezone.utc) - then).total_seconds() > _REFRESH_MIN_AGE_SECONDS
-
-
 @router.get("/update-status")
 async def get_update_status(user: CurrentUser, db: DbDep, refresh: bool = False) -> dict:
-    """refresh=true re-checks GitHub first when the last check is stale — the
-    update banner passes it on every app load."""
+    """refresh=true re-checks GitHub first — the update banner passes it on
+    every app load. A conditional request, so an unchanged release is free."""
     from app import self_update
-    st = await self_update.status(db)
-    if refresh and _check_is_stale(st.get("checked_at")):
+    if refresh:
         return await self_update.check_latest(db)
-    return st
+    return await self_update.status(db)
+
+
+@router.get("/update-banner")
+async def get_update_banner(db: DbDep) -> dict:
+    """The update banner's data. Open on purpose, so the banner shows whatever
+    the app's auth or update settings are; it returns version strings only.
+    Checks GitHub on every call — a conditional request, free when nothing
+    has changed."""
+    from app import self_update
+    st = await self_update.check_latest(db)
+    return {
+        "update_available": bool(st.get("update_available")),
+        "latest_tag": st.get("latest_tag"),
+        "current_version": st.get("current_version"),
+    }
 
 
 @router.post("/update-check")

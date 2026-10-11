@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getToken } from '../api/client'
 
 // Small strip above the page when a newer release exists. Loading the app asks
 // the backend to re-check GitHub (rate-limited server-side, so a busy page is
@@ -18,10 +17,7 @@ export default function UpdateBanner() {
 
   useEffect(() => {
     let live = true
-    const token = getToken()
-    fetch('/api/system/update-status?refresh=true', {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
+    fetch('/api/system/update-banner')
       .then(res => (res.ok ? res.json() : null))
       .then(s => { if (live && s) setSt(s) })
       .catch(() => {})
