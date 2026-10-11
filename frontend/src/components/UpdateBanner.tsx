@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
-// Small strip above the page when a newer release exists. Loading the app asks
-// the backend to re-check GitHub (rate-limited server-side, so a busy page is
-// not a flood), instead of waiting for the hourly checker. Any failure just
-// means no banner — it is a hint, never an error.
+// Small strip above the page when a newer release exists. A fresh load asks
+// the backend; once an update is showing nothing asks again. If the page stays
+// open it asks once every 24 hours. Any failure just means no banner — it is a
+// hint, never an error.
 
 interface UpdateStatus {
   current_version: string
@@ -12,16 +12,29 @@ interface UpdateStatus {
   update_available: boolean
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
 export default function UpdateBanner() {
   const [st, setSt] = useState<UpdateStatus | null>(null)
+  const showing = useRef(false)
 
   useEffect(() => {
     let live = true
-    fetch('/api/system/update-banner')
-      .then(res => (res.ok ? res.json() : null))
-      .then(s => { if (live && s) setSt(s) })
-      .catch(() => {})
-    return () => { live = false }
+    const load = () => {
+      if (showing.current) return
+      fetch('/api/system/update-banner')
+        .then(res => (res.ok ? res.json() : null))
+        .then(s => {
+          if (live && s) {
+            showing.current = !!s.update_available
+            setSt(s)
+          }
+        })
+        .catch(() => {})
+    }
+    load()
+    const id = setInterval(load, DAY_MS)
+    return () => { live = false; clearInterval(id) }
   }, [])
 
   if (!st?.update_available) return null

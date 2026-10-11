@@ -600,7 +600,12 @@ async def get_update_banner(db: DbDep) -> dict:
     Checks GitHub on every call — a conditional request, free when nothing
     has changed."""
     from app import self_update
-    st = await self_update.check_latest(db)
+    st = await self_update.status(db)
+    parsed = self_update._parse_tag(st.get("latest_tag") or "")
+    if not (st.get("update_available") and parsed and parsed > self_update.current_version()):
+        # Nothing known yet: ask GitHub. Once an update is known it is simply
+        # reported, with no request, until the app is on that release.
+        st = await self_update.check_latest(db)
     return {
         "update_available": bool(st.get("update_available")),
         "latest_tag": st.get("latest_tag"),

@@ -448,7 +448,6 @@ async def run_forever() -> None:
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 db.row_factory = aiosqlite.Row
-                await check_latest(db)
                 await maybe_apply(db)
         except Exception:
             log.exception("Self-update check failed")
