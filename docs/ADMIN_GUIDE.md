@@ -119,6 +119,12 @@ crt.sh (no key needed) and, if a key is set under Settings → User Keys,
 Censys. See [PKI-and-Discovery.md](PKI-and-Discovery.md) for details on
 what's normalized into the inventory from each source.
 
+**Validating a certificate against CT** (`POST /api/certificates/{id}/ct-check`,
+analyst or higher) searches crt.sh for each public name on the certificate and
+recognises the certificate in the results by serial number and issuer. The host
+needs outbound HTTPS to crt.sh. Only public DNS names are sent; the call is
+recorded as a `ct_checked` event on the certificate.
+
 ## CA / PKI issuance
 
 Root and intermediate CAs, issuance templates, direct issuance, and CSR

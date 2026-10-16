@@ -209,6 +209,9 @@ export const api = {
     request<Certificate>(`/certificates/${id}/auto-renew`, {
       method: 'PATCH', body: JSON.stringify({ auto_renew, auto_renew_days }),
     }),
+  // Validates against crt.sh. Only the certificate's public DNS names leave pktCert.
+  ctCheckCertificate: (id: number) =>
+    request<CtCheckResult>(`/certificates/${id}/ct-check`, { method: 'POST' }),
   revokeCertificate: (id: number, reason: string, reason_code = 'unspecified') =>
     request<{ status?: string; reason_code?: string; pending_approval?: boolean; request_id?: number; detail?: string }>(`/certificates/${id}/revoke`, {
       method: 'POST', body: JSON.stringify({ reason, reason_code }),
@@ -640,6 +643,33 @@ export interface Certificate {
   public_request_id: number | null
   acme_order_id: number | null
   private_key_pem?: string
+}
+
+export interface CtEntry {
+  crtsh_id: number | null
+  issuer: string | null
+  common_name: string | null
+  names: string[]
+  not_before: string | null
+  not_after: string | null
+  logged_at: string | null
+  serial_number: string | null
+  status: 'known' | 'same_issuer' | 'unexpected'
+}
+
+// 'unavailable' / 'inconclusive' mean crt.sh could not be asked — never read
+// either as "not logged".
+export interface CtCheckResult {
+  verdict: 'logged' | 'not_logged' | 'unexpected_found' | 'unavailable' | 'inconclusive' | 'not_applicable'
+  logged: boolean | null
+  logged_entry: CtEntry | null
+  unexpected: CtEntry[]
+  same_issuer: CtEntry[]
+  names_checked: string[]
+  names_skipped: string[]
+  names_over_limit: string[]
+  errors: string[]
+  crtsh_url: string | null
 }
 
 export interface CertRequest {

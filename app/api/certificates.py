@@ -29,9 +29,9 @@ from pydantic import BaseModel
 
 from app.auth.local import verify_password
 from app.database import get_db
-from app.dependencies import AdminUser, CurrentUser
+from app.dependencies import AdminUser, AnalystUser, CurrentUser
 from app.api import approvals
-from app.cert import issuance, x509_utils
+from app.cert import ct_search, issuance, x509_utils
 from app.cert.crypto import decrypt_str, encrypt_str
 
 router = APIRouter()
@@ -103,6 +103,31 @@ async def get_certificate(cert_id: int, user: CurrentUser, db: aiosqlite.Connect
     if not row:
         raise HTTPException(404, "Certificate not found")
     return _cert_out(row)
+
+
+@router.post("/{cert_id}/ct-check")
+async def ct_check_certificate(cert_id: int, user: AnalystUser, db: aiosqlite.Connection = Depends(get_db)):
+    """Validate one certificate against Certificate Transparency via crt.sh.
+
+    Sends only the certificate's public DNS names to crt.sh — names that cannot
+    be public (.local, IPs, single labels) are never sent. Analyst or higher,
+    because it spends a third party's free service on the caller's behalf, and
+    audit-logged like the other certificate actions."""
+    async with db.execute("SELECT * FROM certificates WHERE id = ?", (cert_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Certificate not found")
+    async with db.execute("SELECT serial_number FROM certificates WHERE serial_number IS NOT NULL") as cur:
+        known_serials = {r["serial_number"] for r in await cur.fetchall()}
+
+    result = await ct_search.validate_against_crtsh(_cert_out(row), known_serials)
+
+    await db.execute(
+        "INSERT INTO cert_events (certificate_id, event_type, message) VALUES (?, 'ct_checked', ?)",
+        (cert_id, f"Checked against crt.sh by {user['username']}: {result['verdict']}"),
+    )
+    await db.commit()
+    return result
 
 
 class DownloadRequest(BaseModel):

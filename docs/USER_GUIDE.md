@@ -103,6 +103,18 @@ subject/issuer/SANs/serial/fingerprint, plus **View Certificate PEM** and
   password, a note, anything).
 - **Revoke** — terminal; the certificate moves to `revoked` status and is
   included in its CA's next CRL.
+- **Validate with crt.sh** — analyst role or higher. Checks the certificate
+  against Certificate Transparency and answers two questions: *is this
+  certificate in the public log?* and *has anything else been issued for its
+  names that you don't know about?* The second lists unexpired certificates
+  from a different issuer that aren't in your inventory — the shape of a
+  mis-issuance. Certificates from a private CA are normally not in the log, so
+  "not found" is expected for them. If crt.sh can't be reached the result says
+  so; that is never reported as "not logged". The check sends the
+  certificate's public DNS names to crt.sh, a third-party service; names that
+  can't be public (`.local`, IP addresses, single labels) are not sent, and at
+  most 10 names are searched. Every check is recorded in the certificate's
+  audit trail.
 - **Reveal Private Key** / **Reveal Passcode** — shown only if the
   certificate has one stored. Every reveal requires re-entering your
   *current* password first (a small confirmation dialog), and is logged
