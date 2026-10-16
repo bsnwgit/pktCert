@@ -1,8 +1,8 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
-import { api, CtCheckRecord, CtCheckResult } from '../api/client'
+import { api, CtCheckDetail, CtCheckRecord, CtCheckStarted } from '../api/client'
 import { useAuth } from '../store/auth'
 import HelpButton from '../components/HelpButton'
-import CtCheckPanel, { CT_VERDICTS } from '../components/CtCheckPanel'
+import { CtCheckOutcome, CT_VERDICTS } from '../components/CtCheckPanel'
 
 // Everyone with a login can read the history; only analysts and above can run a
 // check, and only admins can have the server fetch a certificate from a host —
@@ -31,14 +31,15 @@ export default function CtChecks() {
   const [port, setPort] = useState('443')
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState('')
-  const [result, setResult] = useState<CtCheckResult | null>(null)
+  const [started, setStarted] = useState<CtCheckStarted | null>(null)
+  const [result, setResult] = useState<CtCheckDetail | null>(null)
 
   const [history, setHistory] = useState<CtCheckRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [verdict, setVerdict] = useState('')
   const [open, setOpen] = useState<number | null>(null)
-  const [detail, setDetail] = useState<CtCheckResult | null>(null)
+  const [detail, setDetail] = useState<CtCheckDetail | null>(null)
 
   const load = useCallback(() => {
     api.getCtChecks({ search: search || undefined, verdict: verdict || undefined })
@@ -51,10 +52,19 @@ export default function CtChecks() {
 
   // Other people are running checks too — this is the shared record, so keep it
   // current without anyone having to reload.
+  const anyRunning = history.some(h => h.verdict === 'running')
   useEffect(() => {
-    const t = setInterval(load, 30000)
+    const t = setInterval(load, anyRunning ? 4000 : 30000)
     return () => clearInterval(t)
-  }, [load])
+  }, [load, anyRunning])
+
+  // An open row follows its check: when the history says the verdict changed
+  // (running → answered), fetch the detail again.
+  const openVerdict = history.find(h => h.id === open)?.verdict
+  useEffect(() => {
+    if (open === null) return
+    api.getCtCheck(open).then(setDetail).catch(() => setDetail(null))
+  }, [open, openVerdict])
 
   const loadFile = async (f: File | null) => {
     if (f) setPem(await f.text())
@@ -66,8 +76,12 @@ export default function CtChecks() {
     setChecking(true)
     setError('')
     setResult(null)
+    setStarted(null)
     try {
-      setResult(await api.ctCheckAny(mode === 'pem' ? { pem } : { host: host.trim(), port: Number(port) || 443 }))
+      const s = await api.ctCheckAny(mode === 'pem' ? { pem } : { host: host.trim(), port: Number(port) || 443 })
+      setStarted(s)
+      load()
+      setResult(await api.waitForCtCheck(s.id))
       load()
     } catch (e: any) {
       setError(e.message ?? 'Could not run the Certificate Transparency check')
@@ -80,14 +94,7 @@ export default function CtChecks() {
     if (open === id) { setOpen(null); setDetail(null); return }
     setOpen(id)
     setDetail(null)
-    try {
-      setDetail((await api.getCtCheck(id)).result)
-    } catch {
-      setDetail(null)
-    }
   }
-
-  const c = result?.certificate
 
   return (
     <div className="space-y-6">
@@ -147,15 +154,19 @@ export default function CtChecks() {
             </button>
           </div>
           {error && <p className="text-xs text-red-400">{error}</p>}
-          {result && c && (
+          {started && (
             <div className="border-t border-gray-800 pt-3">
               <p className="text-xs text-white/70">Checked</p>
-              <p className="text-sm text-white break-all">{c.common_name}{c.fetched_from ? ` (from ${c.fetched_from})` : ''}</p>
-              <p className="text-xs text-white/70 font-mono break-all">{c.issuer}</p>
-              <p className="text-xs text-white/70 mb-1">
-                {result.in_inventory_id ? `Already in the inventory as #${result.in_inventory_id}` : 'Not in the inventory'}
+              <p className="text-sm text-white break-all">
+                {started.certificate?.common_name}{started.certificate?.fetched_from ? ` (from ${started.certificate.fetched_from})` : ''}
               </p>
-              <CtCheckPanel result={result} />
+              <p className="text-xs text-white/70 font-mono break-all">{started.certificate?.issuer}</p>
+              {result?.result.in_inventory_id !== undefined && (
+                <p className="text-xs text-white/70 mb-1">
+                  {result.result.in_inventory_id ? `Already in the inventory as #${result.result.in_inventory_id}` : 'Not in the inventory'}
+                </p>
+              )}
+              <div className="mt-2"><CtCheckOutcome check={result ?? { verdict: 'running', result: {} }} /></div>
             </div>
           )}
           </>)}
@@ -213,7 +224,7 @@ export default function CtChecks() {
                     {open === h.id && (
                       <tr className="border-b border-gray-800">
                         <td colSpan={5} className="px-3 py-3">
-                          {detail ? <CtCheckPanel result={detail} /> : <p className="text-xs text-white/70">Loading…</p>}
+                          {detail ? <CtCheckOutcome check={detail} /> : <p className="text-xs text-white/70">Loading…</p>}
                         </td>
                       </tr>
                     )}

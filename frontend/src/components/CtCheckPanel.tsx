@@ -1,8 +1,10 @@
 // Result of a crt.sh validation, shared by the certificate detail view and the
 // CT Checks page.
-import { CtCheckResult, CtEntry } from '../api/client'
+import { CtCheckDetail, CtCheckResult, CtEntry, CtVerdict } from '../api/client'
 
-export const CT_VERDICTS: Record<CtCheckResult['verdict'], { label: string; tone: string }> = {
+export const CT_VERDICTS: Record<CtVerdict, { label: string; tone: string }> = {
+  running: { label: 'Checking crt.sh…', tone: 'text-sky-300' },
+  failed: { label: 'The check failed — nothing was concluded', tone: 'text-red-400' },
   logged: { label: 'Logged in Certificate Transparency', tone: 'text-emerald-400' },
   not_logged: { label: 'Not found in Certificate Transparency', tone: 'text-amber-300' },
   unexpected_found: { label: 'Certificates you may not know about', tone: 'text-red-400' },
@@ -77,4 +79,16 @@ export default function CtCheckPanel({ result }: { result: CtCheckResult }) {
       </p>
     </div>
   )
+}
+
+// A check's outcome in whatever state it is in. The full panel only exists once
+// crt.sh has answered; before that there is nothing to show but the wait.
+export function CtCheckOutcome({ check }: { check: Pick<CtCheckDetail, 'verdict' | 'result'> }) {
+  if (check.verdict === 'running') {
+    return <p className="text-xs text-sky-300">Checking crt.sh… this can take a minute or more for a large domain. You can leave this page; the result will appear in the history.</p>
+  }
+  if (check.verdict === 'failed') {
+    return <p className="text-xs text-red-400">{check.result.error ?? 'The check failed.'}</p>
+  }
+  return <CtCheckPanel result={check.result as CtCheckResult} />
 }

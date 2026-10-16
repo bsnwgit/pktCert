@@ -144,6 +144,12 @@ host you have not scanned. Analysts and above can run a check: paste a PEM or
 open a file. Admins can also enter a host and port, and pktCert connects and
 reads the certificate it presents.
 
+A check can take a minute or more for a large domain, because crt.sh is slow
+there. It starts at once and shows as **Checking crt.sh…** in the history; you
+can leave the page and the result fills in when crt.sh answers. **The check
+failed** means the check itself broke or was interrupted — it says nothing about
+the certificate; run it again.
+
 Below the form is the **history of every check**, visible to all users: when, on
 what certificate, who ran it, and the result. Click a row for the detail. It
 exists so that nobody repeats a lookup that has already been done, and so you

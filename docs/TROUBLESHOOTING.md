@@ -196,6 +196,8 @@ network or the host, not discovery.
 | Fewer results than expected | CT search is bounded by what the logs return for that domain |
 | "Validate with crt.sh" says crt.sh could not be reached, or HTTP 502/503 | crt.sh is a free shared service and often fails under load; the check retries once. Try again later — this is not a statement about the certificate |
 | "Validate with crt.sh" says not found, for an internal-CA certificate | Correct — private CAs do not publish to CT |
+| A check stays on "Checking crt.sh…" for a long time | crt.sh is slow for large domains (over 30 seconds per name is normal for the biggest). It is abandoned after 15 minutes and shows as failed |
+| "The check failed" | The check itself broke or was interrupted (a service restart, or crt.sh never answering). Nothing was concluded about the certificate; run it again |
 | "Nothing to check" | Every name on the certificate is non-public (`.local`, IP, single label), so none was sent |
 
 ---
