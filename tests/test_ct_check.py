@@ -19,6 +19,9 @@ Covers:
   * names that cannot be public are never sent to crt.sh
   * the endpoint needs analyst or higher, 404s an unknown certificate, and
     leaves an audit event
+  * a certificate that is not in the inventory can be checked from a PEM
+    (analyst) or fetched from a host (admin only), is never stored, and bad
+    input is refused
 """
 from __future__ import annotations
 
@@ -44,9 +47,15 @@ os.environ["PKTCERT_CONFIG"] = str(TMP / "config.yaml")
 os.environ["PKTCERT_INSTALL_DIR"] = str(TMP)
 sys.path.insert(0, str(REPO_ROOT))
 
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from cryptography import x509                       # noqa: E402
+from cryptography.hazmat.primitives import hashes, serialization  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
+from cryptography.x509.oid import NameOID           # noqa: E402
 from fastapi.testclient import TestClient           # noqa: E402
 
-from app.cert import ct_search                      # noqa: E402
+from app.cert import ct_search, x509_utils          # noqa: E402
 from app.database import init_db                    # noqa: E402
 from app.dependencies import get_current_user       # noqa: E402
 from app.main import app                            # noqa: E402
@@ -200,6 +209,96 @@ def main() -> int:
     ev = conn.execute("SELECT message FROM cert_events WHERE event_type = 'ct_checked'").fetchall()
     conn.close()
     check("the check is audit-logged with who ran it", len(ev) == 1 and "someone" in ev[0][0], str(ev))
+
+
+    print("\n── a certificate that is not in the inventory ──")
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = datetime.now(timezone.utc)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "adhoc.example.com")])
+    issuer_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Any Issuer")])
+    adhoc = (
+        x509.CertificateBuilder().subject_name(name).issuer_name(issuer_name)
+        .public_key(key.public_key()).serial_number(0x1234ABCD)
+        .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=30))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("adhoc.example.com")]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    adhoc_pem = adhoc.public_bytes(serialization.Encoding.PEM).decode()
+    ANSWER.update(rows=[row(7, "1234abcd", "CN=Any Issuer", ["adhoc.example.com"])], fail=set())
+
+    def count(sql):
+        c = sqlite3.connect(str(DB))
+        try:
+            return c.execute(sql).fetchone()[0]
+        finally:
+            c.close()
+
+    certs_before = count("SELECT COUNT(*) FROM certificates")
+    events_before = count("SELECT COUNT(*) FROM cert_events")
+
+    role["v"] = "viewer"
+    check("a viewer is refused", client.post("/api/certificates/ct-check", json={"pem": adhoc_pem}).status_code == 403)
+    role["v"] = "analyst"
+    r = client.post("/api/certificates/ct-check", json={"pem": adhoc_pem})
+    check("an analyst may check a pasted PEM", r.status_code == 200, r.text[:200])
+    body = r.json()
+    check("it is found in the log", body.get("verdict") == "logged", str(body.get("verdict")))
+    check("it says what it checked", body["certificate"]["common_name"] == "adhoc.example.com"
+          and body["certificate"]["fetched_from"] is None, str(body.get("certificate")))
+    check("it is reported as not in the inventory", body["in_inventory_id"] is None, str(body["in_inventory_id"]))
+    check("nothing is stored", count("SELECT COUNT(*) FROM certificates") == certs_before)
+    check("no audit event for a certificate with no record", count("SELECT COUNT(*) FROM cert_events") == events_before)
+
+    check("garbage is not a certificate", client.post("/api/certificates/ct-check", json={"pem": "nope"}).status_code == 400)
+    check("neither input is refused", client.post("/api/certificates/ct-check", json={}).status_code == 400)
+    check("both inputs are refused",
+          client.post("/api/certificates/ct-check", json={"pem": adhoc_pem, "host": "x.example.com"}).status_code == 400)
+
+    check("an analyst cannot make the server fetch from a host",
+          client.post("/api/certificates/ct-check", json={"host": "adhoc.example.com"}).status_code == 403)
+
+    fetched: list[tuple] = []
+
+    def fake_fetch(host, port, timeout=5.0):
+        fetched.append((host, port))
+        return adhoc_pem, adhoc_pem
+
+    real_fetch = x509_utils.fetch_cert_chain
+    x509_utils.fetch_cert_chain = fake_fetch
+    try:
+        role["v"] = "admin"
+        r = client.post("/api/certificates/ct-check", json={"host": "adhoc.example.com", "port": 8443})
+        check("an admin may fetch from a host", r.status_code == 200, r.text[:200])
+        check("the host and port were used", fetched == [("adhoc.example.com", 8443)], str(fetched))
+        check("the source is reported", r.json()["certificate"]["fetched_from"] == "adhoc.example.com:8443")
+        check("a host with odd characters is refused before any connection",
+              client.post("/api/certificates/ct-check", json={"host": "a b;c"}).status_code == 400
+              and len(fetched) == 1, str(fetched))
+        check("an out-of-range port is refused",
+              client.post("/api/certificates/ct-check", json={"host": "adhoc.example.com", "port": 70000}).status_code == 422)
+
+        def broken_fetch(host, port, timeout=5.0):
+            raise OSError("connection refused")
+        x509_utils.fetch_cert_chain = broken_fetch
+        r = client.post("/api/certificates/ct-check", json={"host": "adhoc.example.com"})
+        check("a host that cannot be reached is a 502, not a crash", r.status_code == 502, f"HTTP {r.status_code}")
+    finally:
+        x509_utils.fetch_cert_chain = real_fetch
+
+    # The same certificate once it IS in the inventory gets its audit trail.
+    conn = sqlite3.connect(str(DB))
+    conn.execute(
+        "INSERT INTO certificates (common_name, san_json, issuer, subject, serial_number, fingerprint_sha256, "
+        "not_before, not_after, status, source) VALUES ('adhoc.example.com', '[]', 'CN=Any Issuer', "
+        "'CN=adhoc.example.com', ?, ?, '2026-01-01T00:00:00', '2099-01-01T00:00:00', 'valid', 'external')",
+        (format(0x1234ABCD, "x"), "cd" * 32),
+    )
+    conn.commit()
+    conn.close()
+    role["v"] = "analyst"
+    r = client.post("/api/certificates/ct-check", json={"pem": adhoc_pem}).json()
+    check("a certificate already in the inventory is recognised", bool(r["in_inventory_id"]), str(r["in_inventory_id"]))
+    check("and its audit trail gets the event", count("SELECT COUNT(*) FROM cert_events") == events_before + 1)
 
     print()
     if FAILURES:

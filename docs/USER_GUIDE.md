@@ -115,6 +115,13 @@ subject/issuer/SANs/serial/fingerprint, plus **View Certificate PEM** and
   can't be public (`.local`, IP addresses, single labels) are not sent, and at
   most 10 names are searched. Every check is recorded in the certificate's
   audit trail.
+- **Check a Certificate with crt.sh** (button at the top of the page, analyst
+  or higher) runs the same validation on a certificate that is **not** in the
+  inventory — a certificate from another team, a partner, or a host you have
+  not scanned. Paste a PEM or open a file. Admins can also enter a host and
+  port, and pktCert connects and reads the certificate it presents. Nothing is
+  stored. If the certificate happens to be in the inventory, the result says
+  which one.
 - **Reveal Private Key** / **Reveal Passcode** — shown only if the
   certificate has one stored. Every reveal requires re-entering your
   *current* password first (a small confirmation dialog), and is logged

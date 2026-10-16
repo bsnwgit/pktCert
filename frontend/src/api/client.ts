@@ -212,6 +212,10 @@ export const api = {
   // Validates against crt.sh. Only the certificate's public DNS names leave pktCert.
   ctCheckCertificate: (id: number) =>
     request<CtCheckResult>(`/certificates/${id}/ct-check`, { method: 'POST' }),
+  // A certificate that is not in the inventory: a PEM (analyst) or a host to
+  // fetch it from (admin — the server opens the connection). Nothing is stored.
+  ctCheckAny: (body: { pem?: string; host?: string; port?: number }) =>
+    request<CtCheckResult>('/certificates/ct-check', { method: 'POST', body: JSON.stringify(body) }),
   revokeCertificate: (id: number, reason: string, reason_code = 'unspecified') =>
     request<{ status?: string; reason_code?: string; pending_approval?: boolean; request_id?: number; detail?: string }>(`/certificates/${id}/revoke`, {
       method: 'POST', body: JSON.stringify({ reason, reason_code }),
@@ -670,6 +674,12 @@ export interface CtCheckResult {
   names_over_limit: string[]
   errors: string[]
   crtsh_url: string | null
+  // Only on a check of a certificate that is not in the inventory.
+  certificate?: {
+    common_name: string; san: string[]; issuer: string; serial_number: string
+    fingerprint_sha256: string; not_before: string; not_after: string; fetched_from: string | null
+  }
+  in_inventory_id?: number | null
 }
 
 export interface CertRequest {

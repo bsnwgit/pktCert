@@ -776,6 +776,104 @@ function DetailModal({ cert, isAdmin, isAnalyst, onClose, onChanged }: { cert: C
   )
 }
 
+// ── Check any certificate against Certificate Transparency ────────────────
+// For a certificate that is not in the inventory: paste or open a PEM, or (admin
+// only, since the server makes the connection) name a host to fetch it from.
+
+function CtCheckAnyModal({ isAdmin, onClose }: { isAdmin: boolean; onClose: () => void }) {
+  const [mode, setMode] = useState<'pem' | 'host'>('pem')
+  const [pem, setPem] = useState('')
+  const [host, setHost] = useState('')
+  const [port, setPort] = useState('443')
+  const [checking, setChecking] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState<CtCheckResult | null>(null)
+
+  const loadFile = async (f: File | null) => {
+    if (!f) return
+    setPem(await f.text())
+  }
+
+  const canRun = mode === 'pem' ? pem.trim().length > 0 : host.trim().length > 0
+
+  const run = async () => {
+    setChecking(true)
+    setError('')
+    setResult(null)
+    try {
+      setResult(await api.ctCheckAny(mode === 'pem' ? { pem } : { host: host.trim(), port: Number(port) || 443 }))
+    } catch (e: any) {
+      setError(e.message ?? 'Could not run the Certificate Transparency check')
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const c = result?.certificate
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 py-8 px-4" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-lg w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <h3 className="text-lg font-semibold text-white mb-2">Check a Certificate with crt.sh</h3>
+        <p className="text-sm text-white mb-4">
+          Validates any certificate against Certificate Transparency — it does not need to be in the inventory, and
+          nothing is stored. The certificate's public DNS names are sent to crt.sh, a third-party service; names that
+          can't be public are not.
+        </p>
+        {isAdmin && (
+          <div className="flex gap-2 mb-3">
+            <button onClick={() => setMode('pem')}
+              className={`text-xs rounded px-3 py-1.5 border ${mode === 'pem' ? 'bg-gray-700 text-white border-gray-500' : 'bg-gray-800 text-white/70 border-gray-700'}`}>
+              Paste or open a PEM
+            </button>
+            <button onClick={() => setMode('host')}
+              className={`text-xs rounded px-3 py-1.5 border ${mode === 'host' ? 'bg-gray-700 text-white border-gray-500' : 'bg-gray-800 text-white/70 border-gray-700'}`}>
+              Fetch from a host
+            </button>
+          </div>
+        )}
+        {mode === 'pem' ? (
+          <div className="space-y-2">
+            <textarea value={pem} onChange={e => setPem(e.target.value)} rows={8}
+              placeholder="-----BEGIN CERTIFICATE-----"
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-gray-600 resize-none" />
+            <input type="file" accept=".pem,.crt,.cer" onChange={e => loadFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-white file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-gray-800 file:text-white hover:file:bg-gray-700 file:cursor-pointer" />
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <input value={host} onChange={e => setHost(e.target.value)} placeholder="host.example.com"
+                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600" />
+              <input value={port} onChange={e => setPort(e.target.value)} inputMode="numeric"
+                className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" />
+            </div>
+            <p className="text-xs text-white/70">pktCert connects to this host and port and reads the certificate it presents. Admin only.</p>
+          </div>
+        )}
+        <div className="mt-4">
+          <button onClick={run} disabled={checking || !canRun}
+            className="text-sm bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded-lg px-4 py-2 transition-colors">
+            {checking ? 'Checking crt.sh…' : 'Validate with crt.sh'}
+          </button>
+        </div>
+        {error && <p className="text-xs text-red-400 mt-3">{error}</p>}
+        {result && c && (
+          <div className="mt-4 border-t border-gray-800 pt-3">
+            <p className="text-xs text-white/70">Checked</p>
+            <p className="text-sm text-white break-all">{c.common_name}{c.fetched_from ? ` (from ${c.fetched_from})` : ''}</p>
+            <p className="text-xs text-white/70 font-mono break-all">{c.issuer}</p>
+            <p className="text-xs text-white/70 mb-1">Valid until {fmtDate(c.not_after)}
+              {result.in_inventory_id ? ` · already in the inventory as #${result.in_inventory_id}` : ' · not in the inventory'}</p>
+            <CtCheckPanel result={result} />
+          </div>
+        )}
+        <button onClick={onClose} className="w-full mt-4 px-4 py-2 text-sm border border-gray-700 hover:border-gray-500 text-white rounded-lg transition-colors">Close</button>
+      </div>
+    </div>
+  )
+}
+
 // ── Upload External Certificate modal ──────────────────────────────────────
 
 function UploadModal({ onClose, onUploaded }: { onClose: () => void; onUploaded: () => void }) {
@@ -870,6 +968,7 @@ export default function Certificates() {
   const [selected, setSelected] = useState<Certificate | null>(null)
   const [showIssue, setShowIssue] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
+  const [showCtCheck, setShowCtCheck] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -921,16 +1020,24 @@ export default function Certificates() {
             <p><span className="text-gray-300 font-medium">Renewing</span> a certificate pktCert issued creates a replacement from the same CA and template, with a new private key, and marks the old one <em>superseded</em>. Superseded certificates stay valid and are not revoked — they just stop raising expiry alerts, since the replacement already exists. Turn on auto-renew to have that happen automatically inside a chosen window; you still have to install the new key.</p>
           </HelpButton>
         </div>
-        {isAdmin && (
+        {isAnalyst && (
           <div className="flex items-center gap-2">
-            <button onClick={() => setShowUpload(true)}
-              className="bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors">
-              + Upload External Certificate
+            <button onClick={() => setShowCtCheck(true)}
+              className="bg-gray-800 hover:bg-gray-700 text-sky-300 border border-sky-800/60 text-sm font-medium rounded-lg px-4 py-2 transition-colors">
+              Check a Certificate with crt.sh
             </button>
-            <button onClick={() => setShowIssue(true)}
-              className="bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors">
-              + Issue Certificate
-            </button>
+            {isAdmin && (
+              <>
+                <button onClick={() => setShowUpload(true)}
+                  className="bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors">
+                  + Upload External Certificate
+                </button>
+                <button onClick={() => setShowIssue(true)}
+                  className="bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors">
+                  + Issue Certificate
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -1029,6 +1136,7 @@ export default function Certificates() {
 
       {selected && <DetailModal cert={selected} isAdmin={isAdmin} isAnalyst={isAnalyst} onClose={() => setSelected(null)} onChanged={load} />}
       {showIssue && <IssueModal cas={cas.filter(c => c.status === 'active')} templates={templates} onClose={() => setShowIssue(false)} onIssued={load} />}
+      {showCtCheck && <CtCheckAnyModal isAdmin={isAdmin} onClose={() => setShowCtCheck(false)} />}
       {showUpload && <UploadModal onClose={() => setShowUpload(false)} onUploaded={load} />}
     </div>
   )

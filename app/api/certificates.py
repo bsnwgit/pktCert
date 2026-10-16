@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import aiosqlite
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.auth.local import verify_password
 from app.database import get_db
@@ -127,6 +128,67 @@ async def ct_check_certificate(cert_id: int, user: AnalystUser, db: aiosqlite.Co
         (cert_id, f"Checked against crt.sh by {user['username']}: {result['verdict']}"),
     )
     await db.commit()
+    return result
+
+
+class CtCheckAnyRequest(BaseModel):
+    pem: str | None = Field(default=None, max_length=65536)
+    host: str | None = Field(default=None, max_length=253)
+    port: int = Field(default=443, ge=1, le=65535)
+
+
+@router.post("/ct-check")
+async def ct_check_any(body: CtCheckAnyRequest, user: AnalystUser, db: aiosqlite.Connection = Depends(get_db)):
+    """Validate a certificate that is not in the inventory against crt.sh.
+
+    Takes either a PEM or a host and port to fetch it from. Fetching makes this
+    server open a connection to a caller-chosen address, which is the same power
+    scan targets have, so it needs the same role: admin. A PEM only needs
+    analyst. Nothing is stored — the certificate is checked and forgotten."""
+    if bool(body.pem) == bool(body.host):
+        raise HTTPException(400, "Provide either a PEM certificate or a host, not both and not neither")
+
+    fetched_from = None
+    if body.host:
+        if user["role"] != "admin":
+            raise HTTPException(403, "Admin role required to fetch a certificate from a host")
+        host = body.host.strip()
+        if not re.fullmatch(r"[A-Za-z0-9._:-]+", host):
+            raise HTTPException(400, "Host must be a DNS name or IP address")
+        try:
+            pem, _chain = await asyncio.to_thread(x509_utils.fetch_cert_chain, host, body.port, 8.0)
+        except Exception as e:
+            raise HTTPException(502, f"Could not fetch a certificate from {host}:{body.port} ({type(e).__name__})")
+        fetched_from = f"{host}:{body.port}"
+    else:
+        pem = body.pem
+
+    try:
+        info = x509_utils.parse_certificate(pem)
+    except Exception:
+        raise HTTPException(400, "That is not a readable PEM certificate")
+
+    async with db.execute("SELECT id, serial_number FROM certificates WHERE serial_number IS NOT NULL") as cur:
+        inventory = await cur.fetchall()
+    known_serials = {r["serial_number"] for r in inventory}
+
+    result = await ct_search.validate_against_crtsh(info, known_serials)
+    result["certificate"] = {
+        "common_name": info["common_name"], "san": info["san"], "issuer": info["issuer"],
+        "serial_number": info["serial_number"], "fingerprint_sha256": info["fingerprint_sha256"],
+        "not_before": info["not_before"], "not_after": info["not_after"], "fetched_from": fetched_from,
+    }
+
+    # Only a certificate that is in the inventory has an audit trail to write to.
+    mine = next((r["id"] for r in inventory
+                 if ct_search._norm_serial(r["serial_number"]) == ct_search._norm_serial(info["serial_number"])), None)
+    result["in_inventory_id"] = mine
+    if mine is not None:
+        await db.execute(
+            "INSERT INTO cert_events (certificate_id, event_type, message) VALUES (?, 'ct_checked', ?)",
+            (mine, f"Checked against crt.sh by {user['username']}: {result['verdict']}"),
+        )
+        await db.commit()
     return result
 
 

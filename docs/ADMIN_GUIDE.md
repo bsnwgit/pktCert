@@ -125,6 +125,12 @@ recognises the certificate in the results by serial number and issuer. The host
 needs outbound HTTPS to crt.sh. Only public DNS names are sent; the call is
 recorded as a `ct_checked` event on the certificate.
 
+`POST /api/certificates/ct-check` does the same for a certificate that is not in
+the inventory, from a PEM (analyst or higher) or from `host` and `port` (admin
+only, because the server opens the connection — the same power as a scan
+target). Nothing is stored; an audit event is written only if the certificate is
+already in the inventory.
+
 ## CA / PKI issuance
 
 Root and intermediate CAs, issuance templates, direct issuance, and CSR
