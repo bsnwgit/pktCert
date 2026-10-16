@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { api, Certificate, CertificateAuthority, CertTemplate, PublicCertRequest } from '../api/client'
+import { Link, useSearchParams } from 'react-router-dom'
+import { api, Certificate, CertificateAuthority, CertTemplate, CtCheckResult, PublicCertRequest } from '../api/client'
 import { useAuth } from '../store/auth'
 import HelpButton from '../components/HelpButton'
+import CtCheckPanel from '../components/CtCheckPanel'
 import Pagination from '../components/Pagination'
 import ConfirmPasswordModal from '../components/ConfirmPasswordModal'
 import { downloadFile, safeFilename } from '../utils/download'
@@ -314,7 +315,7 @@ function IssueModal({ cas, templates, onClose, onIssued }: {
 // caller re-enters their current password every single time (no caching
 // across actions), and each is audit-logged server-side (cert_events).
 
-function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate; isAdmin: boolean; onClose: () => void; onChanged: () => void }) {
+function DetailModal({ cert, isAdmin, isAnalyst, onClose, onChanged }: { cert: Certificate; isAdmin: boolean; isAnalyst: boolean; onClose: () => void; onChanged: () => void }) {
   const [pem, setPem] = useState<{ fmt: string; text: string } | null>(null)
   const [pending, setPending] = useState<PendingAction | null>(null)
   const [revoking, setRevoking] = useState(false)
@@ -324,6 +325,22 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
   const [renewedKey, setRenewedKey] = useState<{ id: number; pem?: string } | null>(null)
   const [autoRenew, setAutoRenew] = useState(cert.auto_renew)
   const [autoRenewDays, setAutoRenewDays] = useState(String(cert.auto_renew_days))
+  const [ctChecking, setCtChecking] = useState(false)
+  const [ctResult, setCtResult] = useState<CtCheckResult | null>(null)
+  const [ctError, setCtError] = useState('')
+
+  const runCtCheck = async () => {
+    setCtChecking(true)
+    setCtError('')
+    try {
+      setCtResult(await api.ctCheckCertificate(cert.id))
+    } catch (e: any) {
+      setCtResult(null)
+      setCtError(e.message ?? 'Could not run the Certificate Transparency check')
+    } finally {
+      setCtChecking(false)
+    }
+  }
 
   // Only certificates this pktCert issued can be renewed — renewal reuses the
   // original CA and template, neither of which exists for a discovered or
@@ -557,6 +574,26 @@ function DetailModal({ cert, isAdmin, onClose, onChanged }: { cert: Certificate;
           </div>
         )}
 
+        {isAnalyst && (
+          <div className="border-t border-gray-800 pt-4 mb-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              <button onClick={runCtCheck} disabled={ctChecking}
+                className="text-sm bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-sky-300 border border-sky-800/60 rounded-lg px-4 py-2 transition-colors">
+                {ctChecking ? 'Checking crt.sh…' : 'Validate with crt.sh'}
+              </button>
+              <span className="text-xs text-white/70">
+                Searches Certificate Transparency logs for this certificate and for anything else issued for its names.
+              </span>
+            </div>
+            <p className="text-xs text-white/70 mt-2">
+              This sends the certificate's public DNS names to crt.sh, a third-party service. Names that can't be
+              public (.local, IP addresses, single labels) are never sent.
+            </p>
+            {ctError && <p className="text-xs text-red-400 mt-2">{ctError}</p>}
+            {ctResult && <CtCheckPanel result={ctResult} />}
+          </div>
+        )}
+
         {isAdmin && renewable && cert.status !== 'revoked' && !cert.renewed_to_id && (
           <div className="border-t border-gray-800 pt-4 mb-4">
             <div className="flex items-center gap-3 flex-wrap">
@@ -739,6 +776,7 @@ function UploadModal({ onClose, onUploaded }: { onClose: () => void; onUploaded:
 export default function Certificates() {
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
+  const isAnalyst = isAdmin || user?.role === 'analyst'
   const [params, setParams] = useSearchParams()
   const [certs, setCerts] = useState<Certificate[]>([])
   const [cas, setCas] = useState<CertificateAuthority[]>([])
@@ -805,16 +843,24 @@ export default function Certificates() {
             <p><span className="text-gray-300 font-medium">Renewing</span> a certificate pktCert issued creates a replacement from the same CA and template, with a new private key, and marks the old one <em>superseded</em>. Superseded certificates stay valid and are not revoked — they just stop raising expiry alerts, since the replacement already exists. Turn on auto-renew to have that happen automatically inside a chosen window; you still have to install the new key.</p>
           </HelpButton>
         </div>
-        {isAdmin && (
+        {isAnalyst && (
           <div className="flex items-center gap-2">
-            <button onClick={() => setShowUpload(true)}
-              className="bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors">
-              + Upload External Certificate
-            </button>
-            <button onClick={() => setShowIssue(true)}
-              className="bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors">
-              + Issue Certificate
-            </button>
+            <Link to="/ct-checks"
+              className="bg-gray-800 hover:bg-gray-700 text-sky-300 border border-sky-800/60 text-sm font-medium rounded-lg px-4 py-2 transition-colors">
+              Check a Certificate with crt.sh
+            </Link>
+            {isAdmin && (
+              <>
+                <button onClick={() => setShowUpload(true)}
+                  className="bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors">
+                  + Upload External Certificate
+                </button>
+                <button onClick={() => setShowIssue(true)}
+                  className="bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors">
+                  + Issue Certificate
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -911,7 +957,7 @@ export default function Certificates() {
         </div>
       )}
 
-      {selected && <DetailModal cert={selected} isAdmin={isAdmin} onClose={() => setSelected(null)} onChanged={load} />}
+      {selected && <DetailModal cert={selected} isAdmin={isAdmin} isAnalyst={isAnalyst} onClose={() => setSelected(null)} onChanged={load} />}
       {showIssue && <IssueModal cas={cas.filter(c => c.status === 'active')} templates={templates} onClose={() => setShowIssue(false)} onIssued={load} />}
       {showUpload && <UploadModal onClose={() => setShowUpload(false)} onUploaded={load} />}
     </div>

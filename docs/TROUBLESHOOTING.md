@@ -194,6 +194,9 @@ network or the host, not discovery.
 | No CT results | No egress from this host to the CT endpoints |
 | No CT results for an internal domain | Correct — internally-issued certificates are not in public CT logs. CT only finds publicly-issued ones |
 | Fewer results than expected | CT search is bounded by what the logs return for that domain |
+| "Validate with crt.sh" says crt.sh could not be reached, or HTTP 502/503 | crt.sh is a free shared service and often fails under load; the check retries once. Try again later — this is not a statement about the certificate |
+| "Validate with crt.sh" says not found, for an internal-CA certificate | Correct — private CAs do not publish to CT |
+| "Nothing to check" | Every name on the certificate is non-public (`.local`, IP, single label), so none was sent |
 
 ---
 

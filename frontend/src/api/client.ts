@@ -209,6 +209,17 @@ export const api = {
     request<Certificate>(`/certificates/${id}/auto-renew`, {
       method: 'PATCH', body: JSON.stringify({ auto_renew, auto_renew_days }),
     }),
+  // Validates against crt.sh. Only the certificate's public DNS names leave pktCert.
+  ctCheckCertificate: (id: number) =>
+    request<CtCheckResult>(`/certificates/${id}/ct-check`, { method: 'POST' }),
+  // A certificate that is not in the inventory: a PEM (analyst) or a host to
+  // fetch it from (admin — the server opens the connection). Nothing is stored.
+  ctCheckAny: (body: { pem?: string; host?: string; port?: number }) =>
+    request<CtCheckResult>('/certificates/ct-check', { method: 'POST', body: JSON.stringify(body) }),
+  // History of crt.sh validations, readable by every role.
+  getCtChecks: (params?: { search?: string; verdict?: string; limit?: number }) =>
+    request<CtCheckRecord[]>(`/ct-checks${toQueryString(params)}`),
+  getCtCheck: (id: number) => request<CtCheckRecord & { result: CtCheckResult }>(`/ct-checks/${id}`),
   revokeCertificate: (id: number, reason: string, reason_code = 'unspecified') =>
     request<{ status?: string; reason_code?: string; pending_approval?: boolean; request_id?: number; detail?: string }>(`/certificates/${id}/revoke`, {
       method: 'POST', body: JSON.stringify({ reason, reason_code }),
@@ -640,6 +651,55 @@ export interface Certificate {
   public_request_id: number | null
   acme_order_id: number | null
   private_key_pem?: string
+}
+
+export interface CtEntry {
+  crtsh_id: number | null
+  issuer: string | null
+  common_name: string | null
+  names: string[]
+  not_before: string | null
+  not_after: string | null
+  logged_at: string | null
+  serial_number: string | null
+  status: 'known' | 'same_issuer' | 'unexpected'
+}
+
+// 'unavailable' / 'inconclusive' mean crt.sh could not be asked — never read
+// either as "not logged".
+export interface CtCheckResult {
+  verdict: 'logged' | 'not_logged' | 'unexpected_found' | 'unavailable' | 'inconclusive' | 'not_applicable'
+  logged: boolean | null
+  logged_entry: CtEntry | null
+  unexpected: CtEntry[]
+  same_issuer: CtEntry[]
+  names_checked: string[]
+  names_skipped: string[]
+  names_over_limit: string[]
+  errors: string[]
+  crtsh_url: string | null
+  // Only on a check of a certificate that is not in the inventory.
+  certificate?: {
+    common_name: string; san: string[]; issuer: string; serial_number: string
+    fingerprint_sha256: string; not_before: string; not_after: string; fetched_from: string | null
+  }
+  in_inventory_id?: number | null
+}
+
+export interface CtCheckRecord {
+  id: number
+  checked_at: string
+  checked_by: string
+  source: 'inventory' | 'pem' | 'host'
+  certificate_id: number | null
+  common_name: string
+  issuer: string
+  serial_number: string
+  fingerprint_sha256: string
+  not_after: string | null
+  fetched_from: string | null
+  verdict: CtCheckResult['verdict']
+  unexpected_count: number
 }
 
 export interface CertRequest {

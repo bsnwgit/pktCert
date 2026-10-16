@@ -419,6 +419,14 @@ behavior; CT search today is available via the underlying functions for
 manual/scripted use. Automatic periodic CT search is tracked as fast-follow
 work.
 
+`validate_against_crtsh` is the third use of crt.sh: it checks one inventory
+certificate rather than discovering new ones. crt.sh refuses `output=json` for
+fingerprint lookups, so it searches by name (public names only, at most 10) and
+matches log entries by serial number and issuer. Unexpired entries for those
+names that are neither in the inventory nor from the same issuer are reported
+as unexpected. "crt.sh could not be reached" is a distinct result from "not
+logged".
+
 ## Certificate status lifecycle
 
 `app/cert/alert_engine.py`'s `_refresh_statuses()` runs every tick

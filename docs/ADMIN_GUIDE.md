@@ -119,6 +119,24 @@ crt.sh (no key needed) and, if a key is set under Settings → User Keys,
 Censys. See [PKI-and-Discovery.md](PKI-and-Discovery.md) for details on
 what's normalized into the inventory from each source.
 
+**Validating a certificate against CT** (`POST /api/certificates/{id}/ct-check`,
+analyst or higher) searches crt.sh for each public name on the certificate and
+recognises the certificate in the results by serial number and issuer. The host
+needs outbound HTTPS to crt.sh. Only public DNS names are sent; the call is
+recorded as a `ct_checked` event on the certificate.
+
+`POST /api/certificates/ct-check` does the same for a certificate that is not in
+the inventory, from a PEM (analyst or higher) or from `host` and `port` (admin
+only, because the server opens the connection — the same power as a scan
+target). The certificate is not stored; an audit event is written only if it is
+already in the inventory.
+
+Every check, from either endpoint, is recorded in the `ct_checks` table
+(migration `020_ct_checks.sql`) and shown on the CT Checks page via
+`GET /api/ct-checks` and `GET /api/ct-checks/{id}`, readable by every role. The
+history holds the certificate's identifying fields, who ran the check, the
+verdict and the full result — never a PEM. It is not pruned.
+
 ## CA / PKI issuance
 
 Root and intermediate CAs, issuance templates, direct issuance, and CSR

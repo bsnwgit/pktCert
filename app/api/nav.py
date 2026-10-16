@@ -32,6 +32,7 @@ NAV_MANIFEST = [
     {"path": "/",                        "label": "Dashboard",               "icon": "◑", "admin_only": False},
     {"path": "/scan-targets",            "label": "Scan Targets",            "icon": "⌕", "admin_only": False},
     {"path": "/certificates",            "label": "Certificates",            "icon": "▤", "admin_only": False, "divider_before": True},
+    {"path": "/ct-checks",               "label": "CT Checks",               "icon": "◈", "admin_only": False},
     {"path": "/certificate-authorities", "label": "Certificate Authorities", "icon": "⛨", "admin_only": False},
     {"path": "/alerts",                  "label": "Alerts",                  "icon": "△", "admin_only": False, "divider_before": True},
     {"path": "/logs",                    "label": "Logs",                    "icon": "☰", "admin_only": False},
