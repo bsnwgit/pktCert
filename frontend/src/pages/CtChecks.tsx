@@ -24,6 +24,7 @@ export default function CtChecks() {
   const isAdmin = user?.role === 'admin'
   const isAnalyst = isAdmin || user?.role === 'analyst'
 
+  const [formOpen, setFormOpen] = useState(true)
   const [mode, setMode] = useState<'pem' | 'host'>('pem')
   const [pem, setPem] = useState('')
   const [host, setHost] = useState('')
@@ -102,7 +103,12 @@ export default function CtChecks() {
 
       {isAnalyst ? (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
-          <h2 className="text-sm font-semibold text-white">Check a certificate</h2>
+          <button onClick={() => setFormOpen(o => !o)} aria-expanded={formOpen}
+            className="flex items-center gap-2 w-full text-left">
+            <span className="text-xs text-white/70 w-3">{formOpen ? '▾' : '▸'}</span>
+            <h2 className="text-sm font-semibold text-white">Check a certificate</h2>
+          </button>
+          {formOpen && (<>
           {isAdmin && (
             <div className="flex gap-2">
               <button onClick={() => setMode('pem')}
@@ -152,6 +158,7 @@ export default function CtChecks() {
               <CtCheckPanel result={result} />
             </div>
           )}
+          </>)}
         </div>
       ) : (
         <p className="text-sm text-white/70">Your role can read the history of checks but not run one. Analyst or higher is needed to check a certificate.</p>

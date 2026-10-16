@@ -48,7 +48,7 @@ export default function Dashboard() {
       </div>
       {isAnalyst && (
         <Link to="/ct-checks"
-          className="bg-gray-800 hover:bg-gray-700 text-sky-300 border border-sky-800/60 text-sm font-medium rounded-lg px-4 py-2 transition-colors">
+          className="bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors">
           Check a Certificate with crt.sh
         </Link>
       )}
