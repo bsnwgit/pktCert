@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, Certificate, CertificateAuthority, CertTemplate, CtCheckResult, PublicCertRequest } from '../api/client'
+import { api, Certificate, CertificateAuthority, CertTemplate, CtCheckDetail, PublicCertRequest } from '../api/client'
 import { useAuth } from '../store/auth'
 import HelpButton from '../components/HelpButton'
-import CtCheckPanel from '../components/CtCheckPanel'
+import { CtCheckOutcome } from '../components/CtCheckPanel'
 import Pagination from '../components/Pagination'
 import ConfirmPasswordModal from '../components/ConfirmPasswordModal'
 import { downloadFile, safeFilename } from '../utils/download'
@@ -326,14 +326,15 @@ function DetailModal({ cert, isAdmin, isAnalyst, onClose, onChanged }: { cert: C
   const [autoRenew, setAutoRenew] = useState(cert.auto_renew)
   const [autoRenewDays, setAutoRenewDays] = useState(String(cert.auto_renew_days))
   const [ctChecking, setCtChecking] = useState(false)
-  const [ctResult, setCtResult] = useState<CtCheckResult | null>(null)
+  const [ctResult, setCtResult] = useState<CtCheckDetail | null>(null)
   const [ctError, setCtError] = useState('')
 
   const runCtCheck = async () => {
     setCtChecking(true)
     setCtError('')
     try {
-      setCtResult(await api.ctCheckCertificate(cert.id))
+      const started = await api.ctCheckCertificate(cert.id)
+      setCtResult(await api.waitForCtCheck(started.id))
     } catch (e: any) {
       setCtResult(null)
       setCtError(e.message ?? 'Could not run the Certificate Transparency check')
@@ -590,7 +591,8 @@ function DetailModal({ cert, isAdmin, isAnalyst, onClose, onChanged }: { cert: C
               public (.local, IP addresses, single labels) are never sent.
             </p>
             {ctError && <p className="text-xs text-red-400 mt-2">{ctError}</p>}
-            {ctResult && <CtCheckPanel result={ctResult} />}
+            {ctChecking && <p className="text-xs text-sky-300 mt-2">Checking crt.sh… this can take a minute or more for a large domain.</p>}
+            {ctResult && <div className="mt-3"><CtCheckOutcome check={ctResult} /></div>}
           </div>
         )}
 

@@ -210,16 +210,28 @@ export const api = {
       method: 'PATCH', body: JSON.stringify({ auto_renew, auto_renew_days }),
     }),
   // Validates against crt.sh. Only the certificate's public DNS names leave pktCert.
+  // Both return at once with a 'running' history row: crt.sh can take minutes on a
+  // large domain. Follow it with waitForCtCheck.
   ctCheckCertificate: (id: number) =>
-    request<CtCheckResult>(`/certificates/${id}/ct-check`, { method: 'POST' }),
+    request<CtCheckStarted>(`/certificates/${id}/ct-check`, { method: 'POST' }),
   // A certificate that is not in the inventory: a PEM (analyst) or a host to
   // fetch it from (admin — the server opens the connection). Nothing is stored.
   ctCheckAny: (body: { pem?: string; host?: string; port?: number }) =>
-    request<CtCheckResult>('/certificates/ct-check', { method: 'POST', body: JSON.stringify(body) }),
+    request<CtCheckStarted>('/certificates/ct-check', { method: 'POST', body: JSON.stringify(body) }),
+  // Poll a check until it is no longer running. Gives up after `maxMs` and
+  // returns the last record, which will still say 'running'.
+  waitForCtCheck: async (id: number, maxMs = 15 * 60 * 1000): Promise<CtCheckDetail> => {
+    const until = Date.now() + maxMs
+    for (;;) {
+      const rec = await request<CtCheckDetail>(`/ct-checks/${id}`)
+      if (rec.verdict !== 'running' || Date.now() > until) return rec
+      await new Promise(r => setTimeout(r, 3000))
+    }
+  },
   // History of crt.sh validations, readable by every role.
   getCtChecks: (params?: { search?: string; verdict?: string; limit?: number }) =>
     request<CtCheckRecord[]>(`/ct-checks${toQueryString(params)}`),
-  getCtCheck: (id: number) => request<CtCheckRecord & { result: CtCheckResult }>(`/ct-checks/${id}`),
+  getCtCheck: (id: number) => request<CtCheckDetail>(`/ct-checks/${id}`),
   revokeCertificate: (id: number, reason: string, reason_code = 'unspecified') =>
     request<{ status?: string; reason_code?: string; pending_approval?: boolean; request_id?: number; detail?: string }>(`/certificates/${id}/revoke`, {
       method: 'POST', body: JSON.stringify({ reason, reason_code }),
@@ -686,6 +698,21 @@ export interface CtCheckResult {
   in_inventory_id?: number | null
 }
 
+// 'running' and 'failed' are states of the check itself, not answers about the
+// certificate: failed means the check broke or was interrupted.
+export type CtVerdict = CtCheckResult['verdict'] | 'running' | 'failed'
+
+export interface CtCheckStarted {
+  id: number
+  verdict: 'running'
+  certificate?: NonNullable<CtCheckResult['certificate']>
+}
+
+export interface CtCheckDetail extends CtCheckRecord {
+  // Empty while running; { error } when failed.
+  result: Partial<CtCheckResult> & { error?: string }
+}
+
 export interface CtCheckRecord {
   id: number
   checked_at: string
@@ -698,7 +725,7 @@ export interface CtCheckRecord {
   fingerprint_sha256: string
   not_after: string | null
   fetched_from: string | null
-  verdict: CtCheckResult['verdict']
+  verdict: CtVerdict
   unexpected_count: number
 }
 

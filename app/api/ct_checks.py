@@ -18,7 +18,8 @@ from app.dependencies import CurrentUser
 
 router = APIRouter()
 
-_VERDICTS = ("logged", "not_logged", "unexpected_found", "unavailable", "inconclusive", "not_applicable")
+_VERDICTS = ("logged", "not_logged", "unexpected_found", "unavailable", "inconclusive", "not_applicable",
+             "running", "failed")
 
 
 def _check_out(r) -> dict:

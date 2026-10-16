@@ -139,6 +139,11 @@ async def lifespan(app: FastAPI):
     await retention.start()
     app.state.retention = retention
 
+    from app.cert import ct_history
+    swept = await ct_history.fail_interrupted()
+    if swept:
+        log.info(f"Marked {swept} interrupted CT check(s) as failed")
+
     from app.cert.ct_discovery import CTDiscovery
     ct_discovery = CTDiscovery()
     await ct_discovery.start()

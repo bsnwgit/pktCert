@@ -22,6 +22,9 @@ Covers:
   * a certificate that is not in the inventory can be checked from a PEM
     (analyst) or fetched from a host (admin only), is never stored, and bad
     input is refused
+  * a check returns at once as 'running' and the answer is filled in afterwards
+    (crt.sh can be slower than a proxy will wait); a check that breaks ends as
+    'failed' rather than staying 'running', and a restart sweeps stuck ones
   * every check is recorded in a history all roles can read, with who ran it,
     and the history never holds a PEM
 """
@@ -57,7 +60,7 @@ from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 from cryptography.x509.oid import NameOID           # noqa: E402
 from fastapi.testclient import TestClient           # noqa: E402
 
-from app.cert import ct_search, x509_utils          # noqa: E402
+from app.cert import ct_history, ct_search, x509_utils  # noqa: E402
 from app.database import init_db                    # noqa: E402
 from app.dependencies import get_current_user       # noqa: E402
 from app.main import app                            # noqa: E402
@@ -198,13 +201,19 @@ def main() -> int:
         "id": 1, "username": "someone", "email": "x@test", "role": role["v"], "is_active": True,
     }
     client = TestClient(app)
+
+    def finished(resp):
+        """The crt.sh work runs after the response has gone; its answer is on the history row."""
+        return client.get(f"/api/ct-checks/{resp.json()['id']}").json()
+
     ANSWER.update(rows=[row(1, "abc123", CT_ISSUER, ["www.example.com"])], fail=set())
 
     check("a viewer is refused", client.post(f"/api/certificates/{cert_id}/ct-check").status_code == 403)
     role["v"] = "analyst"
     r = client.post(f"/api/certificates/{cert_id}/ct-check")
-    check("an analyst may run it", r.status_code == 200, r.text[:200])
-    check("endpoint reports logged", r.json().get("verdict") == "logged", r.text[:200])
+    check("an analyst may run it — and is answered at once, before crt.sh", r.status_code == 202, r.text[:200])
+    check("the immediate answer is 'running'", r.json().get("verdict") == "running", r.text[:200])
+    check("the finished check reports logged", finished(r).get("verdict") == "logged", str(finished(r))[:200])
     check("unknown certificate is 404", client.post("/api/certificates/99999/ct-check").status_code == 404)
 
     conn = sqlite3.connect(str(DB))
@@ -242,12 +251,14 @@ def main() -> int:
     check("a viewer is refused", client.post("/api/certificates/ct-check", json={"pem": adhoc_pem}).status_code == 403)
     role["v"] = "analyst"
     r = client.post("/api/certificates/ct-check", json={"pem": adhoc_pem})
-    check("an analyst may check a pasted PEM", r.status_code == 200, r.text[:200])
-    body = r.json()
+    check("an analyst may check a pasted PEM", r.status_code == 202, r.text[:200])
+    check("what is being checked is named in the immediate answer",
+          r.json()["certificate"]["common_name"] == "adhoc.example.com", r.text[:200])
+    body = finished(r)
     check("it is found in the log", body.get("verdict") == "logged", str(body.get("verdict")))
-    check("it says what it checked", body["certificate"]["common_name"] == "adhoc.example.com"
-          and body["certificate"]["fetched_from"] is None, str(body.get("certificate")))
-    check("it is reported as not in the inventory", body["in_inventory_id"] is None, str(body["in_inventory_id"]))
+    check("it says what it checked", body["result"]["certificate"]["common_name"] == "adhoc.example.com"
+          and body["result"]["certificate"]["fetched_from"] is None, str(body["result"].get("certificate")))
+    check("it is reported as not in the inventory", body["result"]["in_inventory_id"] is None, str(body["result"]["in_inventory_id"]))
     check("nothing is stored", count("SELECT COUNT(*) FROM certificates") == certs_before)
     check("no audit event for a certificate with no record", count("SELECT COUNT(*) FROM cert_events") == events_before)
 
@@ -270,9 +281,9 @@ def main() -> int:
     try:
         role["v"] = "admin"
         r = client.post("/api/certificates/ct-check", json={"host": "adhoc.example.com", "port": 8443})
-        check("an admin may fetch from a host", r.status_code == 200, r.text[:200])
+        check("an admin may fetch from a host", r.status_code == 202, r.text[:200])
         check("the host and port were used", fetched == [("adhoc.example.com", 8443)], str(fetched))
-        check("the source is reported", r.json()["certificate"]["fetched_from"] == "adhoc.example.com:8443")
+        check("the source is reported", finished(r)["result"]["certificate"]["fetched_from"] == "adhoc.example.com:8443")
         check("a host with odd characters is refused before any connection",
               client.post("/api/certificates/ct-check", json={"host": "a b;c"}).status_code == 400
               and len(fetched) == 1, str(fetched))
@@ -298,7 +309,7 @@ def main() -> int:
     conn.commit()
     conn.close()
     role["v"] = "analyst"
-    r = client.post("/api/certificates/ct-check", json={"pem": adhoc_pem}).json()
+    r = finished(client.post("/api/certificates/ct-check", json={"pem": adhoc_pem}))["result"]
     check("a certificate already in the inventory is recognised", bool(r["in_inventory_id"]), str(r["in_inventory_id"]))
     check("and its audit trail gets the event", count("SELECT COUNT(*) FROM cert_events") == events_before + 1)
 
@@ -333,6 +344,46 @@ def main() -> int:
     dump = " ".join(str(v) for r in conn.execute("SELECT * FROM ct_checks").fetchall() for v in r)
     conn.close()
     check("no PEM is ever stored in the history", "BEGIN CERTIFICATE" not in dump)
+
+
+    print("\n── running, failed, interrupted ──")
+    role["v"] = "analyst"
+    real_validate = ct_search.validate_against_crtsh
+
+    async def broken_validate(cert, known):
+        raise RuntimeError("boom")
+
+    ct_search.validate_against_crtsh = broken_validate
+    try:
+        r = client.post("/api/certificates/ct-check", json={"pem": adhoc_pem})
+        d = finished(r)
+        check("a check that breaks ends as 'failed'", d["verdict"] == "failed", d["verdict"])
+        check("the failure is explained on the row", "failed" in d["result"].get("error", ""), str(d["result"]))
+        check("the explanation does not leak the exception text", "boom" not in str(d["result"]), str(d["result"]))
+    finally:
+        ct_search.validate_against_crtsh = real_validate
+
+    ct_history._OVERALL_TIMEOUT_SECONDS = 0.01
+    async def hang(cert, known):
+        await asyncio.sleep(5)
+    ct_search.validate_against_crtsh = hang
+    try:
+        d = finished(client.post("/api/certificates/ct-check", json={"pem": adhoc_pem}))
+        check("a check that never answers is abandoned, not left running", d["verdict"] == "failed", d["verdict"])
+    finally:
+        ct_search.validate_against_crtsh = real_validate
+        ct_history._OVERALL_TIMEOUT_SECONDS = 900
+
+    conn = sqlite3.connect(str(DB))
+    conn.execute("INSERT INTO ct_checks (checked_by, source, verdict) VALUES ('someone', 'pem', 'running')")
+    conn.commit()
+    conn.close()
+    swept = asyncio.run(ct_history.fail_interrupted())
+    check("a check left running by a restart is marked failed", swept == 1 and
+          count("SELECT COUNT(*) FROM ct_checks WHERE verdict = 'running'") == 0, str(swept))
+    check("running and failed can be filtered for",
+          client.get("/api/ct-checks?verdict=failed").status_code == 200
+          and client.get("/api/ct-checks?verdict=running").status_code == 200)
 
     print()
     if FAILURES:
