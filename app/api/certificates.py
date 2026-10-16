@@ -24,7 +24,7 @@ import json
 import re
 
 import aiosqlite
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -106,33 +106,32 @@ async def get_certificate(cert_id: int, user: CurrentUser, db: aiosqlite.Connect
     return _cert_out(row)
 
 
-@router.post("/{cert_id}/ct-check")
-async def ct_check_certificate(cert_id: int, user: AnalystUser, db: aiosqlite.Connection = Depends(get_db)):
+@router.post("/{cert_id}/ct-check", status_code=202)
+async def ct_check_certificate(
+    cert_id: int, background: BackgroundTasks, user: AnalystUser, db: aiosqlite.Connection = Depends(get_db),
+):
     """Validate one certificate against Certificate Transparency via crt.sh.
+
+    Returns at once with the id of a ``running`` row in the check history; the
+    answer is filled in when crt.sh has given it (see app/cert/ct_history.py) and
+    read from GET /api/ct-checks/{id}. crt.sh can take minutes on a large domain.
 
     Sends only the certificate's public DNS names to crt.sh — names that cannot
     be public (.local, IPs, single labels) are never sent. Analyst or higher,
-    because it spends a third party's free service on the caller's behalf, and
-    audit-logged like the other certificate actions."""
+    because it spends a third party's free service on the caller's behalf."""
     async with db.execute("SELECT * FROM certificates WHERE id = ?", (cert_id,)) as cur:
         row = await cur.fetchone()
     if not row:
         raise HTTPException(404, "Certificate not found")
-    async with db.execute("SELECT serial_number FROM certificates WHERE serial_number IS NOT NULL") as cur:
-        known_serials = {r["serial_number"] for r in await cur.fetchall()}
 
-    result = await ct_search.validate_against_crtsh(_cert_out(row), known_serials)
-
-    await db.execute(
-        "INSERT INTO cert_events (certificate_id, event_type, message) VALUES (?, 'ct_checked', ?)",
-        (cert_id, f"Checked against crt.sh by {user['username']}: {result['verdict']}"),
+    cert = _cert_out(row)
+    check_id = await ct_history.record_start(
+        db, username=user["username"], source="inventory", certificate_id=cert_id, cert=cert,
     )
-    await db.commit()
-    await ct_history.record_check(
-        db, username=user["username"], source="inventory", certificate_id=cert_id,
-        cert=_cert_out(row), result=result,
+    background.add_task(
+        ct_history.finish_check, check_id, username=user["username"], cert=cert, certificate_summary=None,
     )
-    return result
+    return {"id": check_id, "verdict": ct_history.RUNNING}
 
 
 class CtCheckAnyRequest(BaseModel):
@@ -141,15 +140,22 @@ class CtCheckAnyRequest(BaseModel):
     port: int = Field(default=443, ge=1, le=65535)
 
 
-@router.post("/ct-check")
-async def ct_check_any(body: CtCheckAnyRequest, user: AnalystUser, db: aiosqlite.Connection = Depends(get_db)):
+@router.post("/ct-check", status_code=202)
+async def ct_check_any(
+    body: CtCheckAnyRequest, background: BackgroundTasks, user: AnalystUser,
+    db: aiosqlite.Connection = Depends(get_db),
+):
     """Validate a certificate that is not in the inventory against crt.sh.
 
     Takes either a PEM or a host and port to fetch it from. Fetching makes this
     server open a connection to a caller-chosen address, which is the same power
     scan targets have, so it needs the same role: admin. A PEM only needs
     analyst. The certificate itself is not stored; the check is recorded in the
-    history everyone can read (app/cert/ct_history.py)."""
+    history everyone can read (app/cert/ct_history.py).
+
+    The certificate is read here, so a bad PEM or an unreachable host is refused
+    at once; the crt.sh work then runs in the background and the result is read
+    from GET /api/ct-checks/{id}."""
     if bool(body.pem) == bool(body.host):
         raise HTTPException(400, "Provide either a PEM certificate or a host, not both and not neither")
 
@@ -173,32 +179,19 @@ async def ct_check_any(body: CtCheckAnyRequest, user: AnalystUser, db: aiosqlite
     except Exception:
         raise HTTPException(400, "That is not a readable PEM certificate")
 
-    async with db.execute("SELECT id, serial_number FROM certificates WHERE serial_number IS NOT NULL") as cur:
-        inventory = await cur.fetchall()
-    known_serials = {r["serial_number"] for r in inventory}
-
-    result = await ct_search.validate_against_crtsh(info, known_serials)
-    result["certificate"] = {
+    summary = {
         "common_name": info["common_name"], "san": info["san"], "issuer": info["issuer"],
         "serial_number": info["serial_number"], "fingerprint_sha256": info["fingerprint_sha256"],
         "not_before": info["not_before"], "not_after": info["not_after"], "fetched_from": fetched_from,
     }
-
-    # Only a certificate that is in the inventory has an audit trail to write to.
-    mine = next((r["id"] for r in inventory
-                 if ct_search._norm_serial(r["serial_number"]) == ct_search._norm_serial(info["serial_number"])), None)
-    result["in_inventory_id"] = mine
-    if mine is not None:
-        await db.execute(
-            "INSERT INTO cert_events (certificate_id, event_type, message) VALUES (?, 'ct_checked', ?)",
-            (mine, f"Checked against crt.sh by {user['username']}: {result['verdict']}"),
-        )
-        await db.commit()
-    await ct_history.record_check(
-        db, username=user["username"], source="host" if fetched_from else "pem", certificate_id=mine,
-        cert=info, result=result, fetched_from=fetched_from,
+    check_id = await ct_history.record_start(
+        db, username=user["username"], source="host" if fetched_from else "pem", certificate_id=None,
+        cert=info, fetched_from=fetched_from,
     )
-    return result
+    background.add_task(
+        ct_history.finish_check, check_id, username=user["username"], cert=info, certificate_summary=summary,
+    )
+    return {"id": check_id, "verdict": ct_history.RUNNING, "certificate": summary}
 
 
 class DownloadRequest(BaseModel):

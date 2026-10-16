@@ -131,6 +131,13 @@ only, because the server opens the connection — the same power as a scan
 target). The certificate is not stored; an audit event is written only if it is
 already in the inventory.
 
+Both endpoints return `202` at once with the id of a `running` row; the crt.sh
+work finishes in the background (`app/cert/ct_history.py`) and the answer is read
+from `GET /api/ct-checks/{id}`. crt.sh can take over 30 seconds for a single name
+on a large domain, longer than a reverse proxy or pktHub will wait for a request.
+A check that breaks, or exceeds 15 minutes, ends as `failed`; one still `running`
+when the service restarts is marked `failed` at startup.
+
 Every check, from either endpoint, is recorded in the `ct_checks` table
 (migration `020_ct_checks.sql`) and shown on the CT Checks page via
 `GET /api/ct-checks` and `GET /api/ct-checks/{id}`, readable by every role. The

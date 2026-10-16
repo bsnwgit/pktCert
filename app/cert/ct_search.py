@@ -56,6 +56,11 @@ _NON_PUBLIC_SUFFIXES = (
 
 _RETRY_STATUSES = (502, 503, 504)
 
+# crt.sh took 34s to answer for one name on one of the largest domains, so the
+# read timeout has to be generous. The caller is a background task, not a request
+# someone is waiting on.
+_QUERY_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
+
 
 class CrtshUnavailable(Exception):
     """crt.sh could not answer — which says nothing about the certificate."""
@@ -68,7 +73,7 @@ async def _crtsh_query(name: str) -> list[dict[str, Any]]:
     # one retry is worth having; more would just be rude to it.
     for attempt in (1, 2):
         try:
-            async with httpx.AsyncClient(timeout=30, headers={"User-Agent": "pktcert"}) as client:
+            async with httpx.AsyncClient(timeout=_QUERY_TIMEOUT, headers={"User-Agent": "pktcert"}) as client:
                 resp = await client.get(_CRTSH_URL, params=params)
         except httpx.HTTPError as e:
             if attempt == 2:
