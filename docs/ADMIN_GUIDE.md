@@ -128,8 +128,14 @@ recorded as a `ct_checked` event on the certificate.
 `POST /api/certificates/ct-check` does the same for a certificate that is not in
 the inventory, from a PEM (analyst or higher) or from `host` and `port` (admin
 only, because the server opens the connection — the same power as a scan
-target). Nothing is stored; an audit event is written only if the certificate is
+target). The certificate is not stored; an audit event is written only if it is
 already in the inventory.
+
+Every check, from either endpoint, is recorded in the `ct_checks` table
+(migration `020_ct_checks.sql`) and shown on the CT Checks page via
+`GET /api/ct-checks` and `GET /api/ct-checks/{id}`, readable by every role. The
+history holds the certificate's identifying fields, who ran the check, the
+verdict and the full result — never a PEM. It is not pruned.
 
 ## CA / PKI issuance
 

@@ -78,6 +78,7 @@ const NAV = [
   { to: '/',                        label: 'Dashboard',              icon: '◑', adminOnly: false },
   { to: '/scan-targets',            label: 'Scan Targets',           icon: '⌕', adminOnly: false },
   { to: '/certificates',            label: 'Certificates',           icon: '▤', adminOnly: false, dividerBefore: true },
+  { to: '/ct-checks',               label: 'CT Checks',              icon: '◈', adminOnly: false },
   { to: '/certificate-authorities', label: 'Certificate Authorities', icon: '⛨', adminOnly: false },
   // Hidden unless separation of duties is switched on — see approvalsVisible
   // below. A queue nobody uses is just a dead link in the sidebar.

@@ -22,6 +22,8 @@ Covers:
   * a certificate that is not in the inventory can be checked from a PEM
     (analyst) or fetched from a host (admin only), is never stored, and bad
     input is refused
+  * every check is recorded in a history all roles can read, with who ran it,
+    and the history never holds a PEM
 """
 from __future__ import annotations
 
@@ -299,6 +301,38 @@ def main() -> int:
     r = client.post("/api/certificates/ct-check", json={"pem": adhoc_pem}).json()
     check("a certificate already in the inventory is recognised", bool(r["in_inventory_id"]), str(r["in_inventory_id"]))
     check("and its audit trail gets the event", count("SELECT COUNT(*) FROM cert_events") == events_before + 1)
+
+
+    print("\n── history ──")
+    role["v"] = "viewer"
+    rows_v = client.get("/api/ct-checks")
+    check("a viewer can read the history", rows_v.status_code == 200, f"HTTP {rows_v.status_code}")
+    hist = rows_v.json()
+    by_source = {h["source"] for h in hist}
+    check("inventory, pasted and fetched checks are all recorded", by_source == {"inventory", "pem", "host"}, str(by_source))
+    check("the failed fetch and the refused input left no row",
+          len(hist) == 4, f"{len(hist)} rows: {[h['source'] for h in hist]}")
+    check("newest first", hist[0]["id"] > hist[-1]["id"])
+    check("who ran each check is recorded", {h["checked_by"] for h in hist} == {"someone"}, str({h["checked_by"] for h in hist}))
+    check("a host check records where it was fetched from",
+          any(h["fetched_from"] == "adhoc.example.com:8443" for h in hist), str([h["fetched_from"] for h in hist]))
+    check("an inventory check links its certificate", any(h["certificate_id"] == cert_id for h in hist if h["source"] == "inventory"))
+    check("the verdict is stored", all(h["verdict"] in ("logged", "unexpected_found") for h in hist), str([h["verdict"] for h in hist]))
+
+    one = client.get(f"/api/ct-checks/{hist[0]['id']}")
+    check("a viewer can open one check", one.status_code == 200 and "result" in one.json(), one.text[:150])
+    check("an unknown check is 404", client.get("/api/ct-checks/99999").status_code == 404)
+    check("an unknown verdict filter is refused", client.get("/api/ct-checks?verdict=bogus").status_code == 400)
+    check("filtering by verdict works",
+          all(h["verdict"] == "logged" for h in client.get("/api/ct-checks?verdict=logged").json()))
+    check("searching by who ran it works",
+          len(client.get("/api/ct-checks?search=someone").json()) == 4
+          and client.get("/api/ct-checks?search=nobody-here").json() == [])
+
+    conn = sqlite3.connect(str(DB))
+    dump = " ".join(str(v) for r in conn.execute("SELECT * FROM ct_checks").fetchall() for v in r)
+    conn.close()
+    check("no PEM is ever stored in the history", "BEGIN CERTIFICATE" not in dump)
 
     print()
     if FAILURES:

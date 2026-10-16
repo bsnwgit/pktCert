@@ -32,7 +32,7 @@ from app.auth.local import verify_password
 from app.database import get_db
 from app.dependencies import AdminUser, AnalystUser, CurrentUser
 from app.api import approvals
-from app.cert import ct_search, issuance, x509_utils
+from app.cert import ct_history, ct_search, issuance, x509_utils
 from app.cert.crypto import decrypt_str, encrypt_str
 
 router = APIRouter()
@@ -128,6 +128,10 @@ async def ct_check_certificate(cert_id: int, user: AnalystUser, db: aiosqlite.Co
         (cert_id, f"Checked against crt.sh by {user['username']}: {result['verdict']}"),
     )
     await db.commit()
+    await ct_history.record_check(
+        db, username=user["username"], source="inventory", certificate_id=cert_id,
+        cert=_cert_out(row), result=result,
+    )
     return result
 
 
@@ -144,7 +148,8 @@ async def ct_check_any(body: CtCheckAnyRequest, user: AnalystUser, db: aiosqlite
     Takes either a PEM or a host and port to fetch it from. Fetching makes this
     server open a connection to a caller-chosen address, which is the same power
     scan targets have, so it needs the same role: admin. A PEM only needs
-    analyst. Nothing is stored — the certificate is checked and forgotten."""
+    analyst. The certificate itself is not stored; the check is recorded in the
+    history everyone can read (app/cert/ct_history.py)."""
     if bool(body.pem) == bool(body.host):
         raise HTTPException(400, "Provide either a PEM certificate or a host, not both and not neither")
 
@@ -189,6 +194,10 @@ async def ct_check_any(body: CtCheckAnyRequest, user: AnalystUser, db: aiosqlite
             (mine, f"Checked against crt.sh by {user['username']}: {result['verdict']}"),
         )
         await db.commit()
+    await ct_history.record_check(
+        db, username=user["username"], source="host" if fetched_from else "pem", certificate_id=mine,
+        cert=info, result=result, fetched_from=fetched_from,
+    )
     return result
 
 

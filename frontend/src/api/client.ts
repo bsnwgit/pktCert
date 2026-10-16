@@ -216,6 +216,10 @@ export const api = {
   // fetch it from (admin — the server opens the connection). Nothing is stored.
   ctCheckAny: (body: { pem?: string; host?: string; port?: number }) =>
     request<CtCheckResult>('/certificates/ct-check', { method: 'POST', body: JSON.stringify(body) }),
+  // History of crt.sh validations, readable by every role.
+  getCtChecks: (params?: { search?: string; verdict?: string; limit?: number }) =>
+    request<CtCheckRecord[]>(`/ct-checks${toQueryString(params)}`),
+  getCtCheck: (id: number) => request<CtCheckRecord & { result: CtCheckResult }>(`/ct-checks/${id}`),
   revokeCertificate: (id: number, reason: string, reason_code = 'unspecified') =>
     request<{ status?: string; reason_code?: string; pending_approval?: boolean; request_id?: number; detail?: string }>(`/certificates/${id}/revoke`, {
       method: 'POST', body: JSON.stringify({ reason, reason_code }),
@@ -680,6 +684,22 @@ export interface CtCheckResult {
     fingerprint_sha256: string; not_before: string; not_after: string; fetched_from: string | null
   }
   in_inventory_id?: number | null
+}
+
+export interface CtCheckRecord {
+  id: number
+  checked_at: string
+  checked_by: string
+  source: 'inventory' | 'pem' | 'host'
+  certificate_id: number | null
+  common_name: string
+  issuer: string
+  serial_number: string
+  fingerprint_sha256: string
+  not_after: string | null
+  fetched_from: string | null
+  verdict: CtCheckResult['verdict']
+  unexpected_count: number
 }
 
 export interface CertRequest {

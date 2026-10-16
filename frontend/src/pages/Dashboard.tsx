@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, DashboardSummary } from '../api/client'
 import HelpButton from '../components/HelpButton'
+import { useAuth } from '../store/auth'
 
 function StatCard({ label, value, accent }: { label: string; value: string | number; accent?: string }) {
   return (
@@ -25,6 +26,8 @@ const STATUS_STYLES: Record<string, string> = {
 export default function Dashboard() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null)
   const [loading, setLoading] = useState(true)
+  const { user } = useAuth()
+  const isAnalyst = user?.role === 'admin' || user?.role === 'analyst'
 
   useEffect(() => {
     api.getDashboardSummary().then(setSummary).finally(() => setLoading(false))
@@ -35,12 +38,20 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
       <div className="flex items-center gap-2">
         <h1 className="text-xl font-bold text-white">Dashboard</h1>
         <HelpButton title="Dashboard — How It Works">
           <p><span className="text-gray-300 font-medium">Total Certificates</span> covers every cert in the inventory — discovered by scan, found via Certificate Transparency search, or issued by an internal CA. <span className="text-gray-300 font-medium">Expiring Soon</span> and <span className="text-gray-300 font-medium">Active Alerts</span> both link through to their full pages.</p>
           <p>Expiring & Expired is a live shortcut — click a row to open that certificate's detail.</p>
         </HelpButton>
+      </div>
+      {isAnalyst && (
+        <Link to="/ct-checks"
+          className="bg-gray-800 hover:bg-gray-700 text-sky-300 border border-sky-800/60 text-sm font-medium rounded-lg px-4 py-2 transition-colors">
+          Check a Certificate with crt.sh
+        </Link>
+      )}
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

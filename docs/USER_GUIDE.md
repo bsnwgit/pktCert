@@ -26,7 +26,7 @@ your password.
 
 ## Navigation
 
-**Dashboard**, **Certificates**, **Scan Targets**, **Certificate
+**Dashboard**, **Certificates**, **CT Checks**, **Scan Targets**, **Certificate
 Authorities**, **Approvals**, **Alerts**, **Logs**. **Settings** appears
 only for admins.
 
@@ -115,13 +115,8 @@ subject/issuer/SANs/serial/fingerprint, plus **View Certificate PEM** and
   can't be public (`.local`, IP addresses, single labels) are not sent, and at
   most 10 names are searched. Every check is recorded in the certificate's
   audit trail.
-- **Check a Certificate with crt.sh** (button at the top of the page, analyst
-  or higher) runs the same validation on a certificate that is **not** in the
-  inventory — a certificate from another team, a partner, or a host you have
-  not scanned. Paste a PEM or open a file. Admins can also enter a host and
-  port, and pktCert connects and reads the certificate it presents. Nothing is
-  stored. If the certificate happens to be in the inventory, the result says
-  which one.
+- **Check a Certificate with crt.sh** (button at the top of this page and on
+  the Dashboard, analyst or higher) opens the **CT Checks** page — see below.
 - **Reveal Private Key** / **Reveal Passcode** — shown only if the
   certificate has one stored. Every reveal requires re-entering your
   *current* password first (a small confirmation dialog), and is logged
@@ -140,6 +135,21 @@ subject/issuer/SANs/serial/fingerprint, plus **View Certificate PEM** and
 pktHub has already signed you in, and the password checked is that of the
 local pktCert account with the same username. If no such account exists, the
 error says so; create one, or open pktCert directly and sign in.
+
+## CT Checks
+
+Validates **any** certificate against Certificate Transparency through crt.sh —
+not only ones in the inventory: a certificate from another team, a partner, or a
+host you have not scanned. Analysts and above can run a check: paste a PEM or
+open a file. Admins can also enter a host and port, and pktCert connects and
+reads the certificate it presents.
+
+Below the form is the **history of every check**, visible to all users: when, on
+what certificate, who ran it, and the result. Click a row for the detail. It
+exists so that nobody repeats a lookup that has already been done, and so you
+can see what others have checked. Checks run from a certificate's own detail
+view appear here too. A PEM itself is never kept — only what identifies the
+certificate and the result.
 
 ## Scan Targets
 

@@ -39,6 +39,7 @@ from app.api import (
     integrations as integrations_router,
     widgets as widgets_router,
     nav as nav_router,
+    ct_checks as ct_checks_router,
     docs as docs_router,
     crl as crl_router,
     aia as aia_router,
@@ -365,6 +366,7 @@ app.include_router(mxtoolbox_router.router, prefix="/api/mxtoolbox",    tags=["m
 app.include_router(integrations_router.router, prefix="/api/integrations", tags=["integrations"])
 app.include_router(widgets_router.router,   prefix="/api/widgets",      tags=["widgets"])
 app.include_router(nav_router.router,       prefix="/api/nav",          tags=["nav"])
+app.include_router(ct_checks_router.router, prefix="/api/ct-checks",    tags=["ct-checks"])
 app.include_router(docs_router.router,      prefix="/api/docs-content", tags=["docs"])
 app.include_router(resonance_router.router, prefix="/api/resonance",    tags=["resonance"])
 # The assistant's data surface. Carries its own absolute paths — /api/resonance/data/*
