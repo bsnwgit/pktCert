@@ -167,6 +167,14 @@ async def _profile_for(db: aiosqlite.Connection, account):
 
 # ── serialisation ────────────────────────────────────────────────────────────
 
+def _rfc3339(value: str) -> str:
+    """SQLite's datetime('now') is UTC as "YYYY-MM-DD HH:MM:SS". RFC 8555 wants
+    RFC 3339, "YYYY-MM-DDTHH:MM:SSZ", and certbot's josepy refuses anything else."""
+    if "T" in value:
+        return value
+    return value.replace(" ", "T", 1) + "Z"
+
+
 def _identifier_of(authz) -> dict:
     name = authz["identifier"]
     return {"type": "dns", "value": f"*.{name}" if authz["wildcard"] else name}
@@ -180,7 +188,7 @@ async def _order_json(db: aiosqlite.Connection, base: str, order) -> dict:
 
     payload = {
         "status": order["status"],
-        "expires": order["expires_at"],
+        "expires": _rfc3339(order["expires_at"]),
         "identifiers": [_identifier_of(a) for a in authzs],
         "authorizations": [f"{base}/acme/authz/{a['id']}" for a in authzs],
         "finalize": f"{base}/acme/order/{order['id']}/finalize",
@@ -200,7 +208,7 @@ async def _authz_json(db: aiosqlite.Connection, base: str, authz) -> dict:
     payload = {
         "identifier": {"type": "dns", "value": authz["identifier"]},
         "status": authz["status"],
-        "expires": authz["expires_at"],
+        "expires": _rfc3339(authz["expires_at"]),
         "challenges": [_challenge_json(base, c) for c in challenges],
     }
     if authz["wildcard"]:
@@ -216,7 +224,7 @@ def _challenge_json(base: str, challenge) -> dict:
         "token": challenge["token"],
     }
     if challenge["validated_at"]:
-        payload["validated"] = challenge["validated_at"]
+        payload["validated"] = _rfc3339(challenge["validated_at"])
     if challenge["error_json"]:
         payload["error"] = json.loads(challenge["error_json"])
     return payload

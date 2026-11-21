@@ -26,6 +26,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -278,6 +279,11 @@ async def main() -> int:
     order_url = r.headers["location"]
     order = r.json()
     check("it starts pending", order["status"] == "pending", order["status"])
+    # RFC 8555 §7.1.3 timestamps are RFC 3339; certbot's josepy rejects a space
+    # in place of the T and a missing Z, which is what SQLite's datetime() gives.
+    rfc3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+    check("the order's expiry is an RFC 3339 timestamp", bool(rfc3339.match(str(order.get("expires")))),
+          str(order.get("expires")))
 
     authz_url = order["authorizations"][0]
     r = client.post("/acme" + authz_url.split("/acme", 1)[1], None)
@@ -285,6 +291,8 @@ async def main() -> int:
     authz = r.json()
     http_challenge = next(c for c in authz["challenges"] if c["type"] == "http-01")
     check("it offers http-01", bool(http_challenge["token"]), str(authz["challenges"]))
+    check("the authorization's expiry is an RFC 3339 timestamp", bool(rfc3339.match(str(authz.get("expires")))),
+          str(authz.get("expires")))
 
     expected_key_auth = f"{http_challenge['token']}.{client.thumbprint()}"
     served: dict = {"value": "the wrong thing entirely"}
@@ -314,6 +322,8 @@ async def main() -> int:
         r = client.post(chall_path, {})
         check("a correctly served challenge validates", r.json()["status"] == "valid",
               str(r.json().get("status")))
+        check("and its validated time is an RFC 3339 timestamp",
+              bool(rfc3339.match(str(r.json().get("validated")))), str(r.json().get("validated")))
 
         r = client.post("/acme" + order_url.split("/acme", 1)[1], None)
         check("the order becomes ready", r.json()["status"] == "ready", r.json()["status"])
